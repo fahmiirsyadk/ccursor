@@ -395,12 +395,15 @@ describe("agent turn", { skip }, () => {
     assert.equal(response.headers.get("content-type"), "application/proto");
   });
 
-  it("reports a service that does not exist as unimplemented", async () => {
+  it("answers a service it does not know with an empty message", async () => {
+    // Cursor's client is newer than the schema bundle, so it calls methods we have
+    // never seen. An empty body decodes as an empty message; an error is a toast.
     const response = await fetch(`${base}/agent.v1.NoSuchService/Nope`, {
       method: "POST",
       body: "",
     });
-    const body = await response.json();
-    assert.equal(body.code, 12);
+
+    assert.equal(response.status, 200);
+    assert.equal((await response.arrayBuffer()).byteLength, 0);
   });
 });

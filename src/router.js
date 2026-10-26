@@ -5,16 +5,23 @@
  * `https.request`. This module replaces both, so a call can be answered by the
  * local server instead of leaving the machine.
  *
- * The decision is made on the **path**, not the host:
+ * Two decisions, made for two different reasons:
  *
- *   /agent.v1.AgentService/RunSSE          -> local
- *   /aiserver.v1.AiService/AvailableModels -> local
- *   /auth/stripe_profile                   -> local
- *   anything else                          -> untouched
+ * 1. RPCs are matched on the **path**:
  *
- * Matching on the path means this does not depend on Cursor's hostnames, which
- * change between releases and between services. The path is the one part of the
- * contract the client cannot vary: it is the RPC it is calling.
+ *      /agent.v1.AgentService/RunSSE          -> local
+ *      /aiserver.v1.AiService/AvailableModels -> local
+ *      /auth/stripe_profile                   -> local
+ *
+ *    The path is the part of the contract the client cannot vary: it is the RPC it
+ *    is calling. Hostnames change between releases; the method name does not.
+ *
+ * 2. Telemetry is matched on the **host**, and answered with an empty reply:
+ *
+ *      metrics.cursor.sh                      -> local sink
+ *      mobile.events.data.microsoft.com       -> local sink
+ *
+ *    These carry reports, not answers, so nothing the UI renders depends on them.
  *
  * Two properties matter:
  *
@@ -117,16 +124,42 @@ function isLocalTarget(parsed, localBase) {
 }
 
 /**
+ * Should this request be answered with an empty reply instead of being sent?
+ *
+ * A sink rule is a host, optionally followed by a path prefix.
+ *
+ * @param {string} hostname
+ * @param {string} pathname
+ * @param {string[]} sinks
+ */
+export function shouldSink(hostname, pathname, sinks) {
+  const host = String(hostname ?? "").toLowerCase();
+  const path = String(pathname ?? "/");
+
+  for (const rule of sinks ?? []) {
+    if (typeof rule !== "string" || rule.length === 0) continue;
+    const slash = rule.indexOf("/");
+    if (slash === -1) {
+      if (host === rule) return true;
+      continue;
+    }
+    if (host === rule.slice(0, slash) && path.startsWith(rule.slice(slash))) return true;
+  }
+  return false;
+}
+
+/**
  * Install the hook.
  *
  * @param {object} options
  * @param {string} options.localBase e.g. "http://127.0.0.1:39831"
  * @param {string[]} options.routes redirect rules
+ * @param {string[]} [options.sinks] hosts answered locally with an empty reply
  * @param {number} [options.windowId] forwarded as x-client-wid
  * @param {(event: object) => void} [options.onEvent] diagnostics
  * @returns {{uninstall: () => void}}
  */
-export function install({ localBase, routes, windowId, onEvent } = {}) {
+export function install({ localBase, routes, sinks, windowId, onEvent } = {}) {
   if (globalThis[GUARD]) return globalThis[GUARD];
 
   const originalHttpRequest = http.request;
@@ -143,6 +176,21 @@ export function install({ localBase, routes, windowId, onEvent } = {}) {
       }
     }
   };
+
+  /** Answer a telemetry request ourselves: no body, no network. */
+  function sink(parsed, options, callback) {
+    emit({ type: "sink", host: parsed.hostname, path: parsed.pathname });
+
+    const init = {
+      method: options.method ?? "GET",
+      headers: localHeaders(options.headers, windowId),
+    };
+
+    return http.request(
+      { hostname: "127.0.0.1", port: new URL(localBase).port || 80, path: "/byok/sink", ...init },
+      callback,
+    );
+  }
 
   function divert(parsed, options, callback) {
     const rewritten = rewriteUrl(parsed.href, localBase);
@@ -203,12 +251,9 @@ export function install({ localBase, routes, windowId, onEvent } = {}) {
         return passthrough();
       }
 
-      if (
-        parsed &&
-        !isLocalTarget(parsed, localBase) &&
-        shouldRedirect(parsed.pathname, routes)
-      ) {
-        return divert(parsed, opts, cb);
+      if (parsed && !isLocalTarget(parsed, localBase)) {
+        if (shouldSink(parsed.hostname, parsed.pathname, sinks)) return sink(parsed, opts, cb);
+        if (shouldRedirect(parsed.pathname, routes)) return divert(parsed, opts, cb);
       }
 
       return passthrough();
@@ -239,7 +284,7 @@ export function install({ localBase, routes, windowId, onEvent } = {}) {
   };
 
   globalThis[GUARD] = handle;
-  emit({ type: "installed", localBase, rules: routes.length });
+  emit({ type: "installed", localBase, rules: routes.length, sinks: (sinks ?? []).length });
   return handle;
 }
 

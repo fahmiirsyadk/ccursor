@@ -37,6 +37,7 @@ import { putBlob } from "./agent/blobs.js";
 import { closeSession, deliver, next, openSession, sessionCount, sweep } from "./agent/session.js";
 import { runTurn } from "./agent/turn.js";
 import { HANDLERS, REST } from "./local/api.js";
+import { SINK_PATH } from "./local/telemetry.js";
 
 const UNAVAILABLE = 12; // Connect code for unimplemented
 
@@ -50,6 +51,8 @@ const BIDI_SERVICE = "aiserver.v1.BidiService";
 export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0.1" } = {}) {
   let root = null;
   let methods = null;
+  /** Routes the client asked for that the cached schema does not know. */
+  const unknownRoutes = new Map();
 
   const stats = {
     requests: 0,
@@ -59,6 +62,8 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     blobs: 0,
     local: 0,
     empty: 0,
+    unknown: 0,
+    sink: 0,
     errors: 0,
     startedAt: Date.now(),
   };
@@ -123,9 +128,36 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
         JSON.stringify({
           uptimeMs: Date.now() - stats.startedAt,
           sessions: sessionCount(),
+          unknownRoutes: Object.fromEntries(unknownRoutes),
           ...stats,
         }),
       );
+      return;
+    }
+
+    // Telemetry the router sent here. Answer and forget: the caller only wants to
+    // know the report was accepted.
+    if (pathname === SINK_PATH) {
+      stats.sink += 1;
+      req.resume();
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // The renderer's hook opens this and expects it to stay open. It carries model
+    // refreshes; we have nothing to push yet, but closing it makes the hook log an
+    // error on every boot.
+    if (pathname === "/byok/events") {
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      res.write(": connected\n\n");
+      const keepAlive = setInterval(() => res.write(": ping\n\n"), 25_000);
+      keepAlive.unref?.();
+      req.on("close", () => clearInterval(keepAlive));
       return;
     }
 
@@ -185,10 +217,14 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
 
     const method = getMethods().get(route);
     if (!method) {
-      stats.errors += 1;
-      warn(`${route} is not in Cursor's schema`);
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(errorBody(UNAVAILABLE, `${route} not implemented`));
+      // The client can be newer than the schema we have: the extension bundle that
+      // carries it is a separate, older artifact. Answering with an empty message
+      // keeps the IDE quiet — an empty protobuf is a valid encoding of every
+      // response type — while the counter records what we were asked for.
+      stats.unknown += 1;
+      unknownRoutes.set(route, (unknownRoutes.get(route) ?? 0) + 1);
+      warn(`${route} is not in the cached schema; answered with an empty message`);
+      unary(req, res, () => Buffer.alloc(0));
       return;
     }
 

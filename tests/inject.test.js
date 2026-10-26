@@ -134,7 +134,7 @@ describe("injection", () => {
     assert.deepEqual(result.map((entry) => entry.status), ["injected", "injected"]);
 
     const after = fs.readFileSync(file, "utf8");
-    assert.ok(after.startsWith(HEADER));
+    assert.ok(after.startsWith("/* CURSOR-BYOK-ROUTER-3 "), "versioned header");
     assert.ok(after.endsWith(before), "original bundle is intact");
   });
 
@@ -146,7 +146,26 @@ describe("injection", () => {
     assert.deepEqual(again.map((entry) => entry.status), ["already", "already"]);
 
     const file = path.join(appRoot, ROUTED_EXTENSIONS[0].file);
-    assert.equal(fs.readFileSync(file, "utf8").split(HEADER).length - 1, 1);
+    assert.equal(fs.readFileSync(file, "utf8").split("/* CURSOR-BYOK-ROUTER-3 ").length - 1, 1);
+  });
+
+  it("replaces an older copy of our own router", () => {
+    // The injected script is a snapshot. After the router changes, the copy inside
+    // Cursor's bundle is stale and has to be swapped, not kept.
+    const appRoot = makeApp();
+    inject.injectAll(appRoot, routesPath);
+
+    const file = path.join(appRoot, ROUTED_EXTENSIONS[0].file);
+    const data = fs.readFileSync(file, "utf8");
+    const stale = data.replace(/CURSOR-BYOK-ROUTER-3 [0-9a-f]{12}/, "CURSOR-BYOK-ROUTER-3 000000000000");
+    fs.writeFileSync(file, stale);
+
+    const result = inject.injectAll(appRoot, routesPath);
+    assert.deepEqual(result.map((entry) => entry.status), ["updated", "already"]);
+
+    const after = fs.readFileSync(file, "utf8");
+    assert.equal(after.includes("000000000000"), false);
+    assert.equal(after.split("/* CURSOR-BYOK-ROUTER-3 ").length - 1, 1, "not stacked");
   });
 
   it("removes exactly what it added", () => {
@@ -171,15 +190,14 @@ describe("injection", () => {
   it("reports which hosts carry the router", () => {
     const appRoot = makeApp();
     assert.deepEqual(
-      inject.injected(appRoot).map((entry) => entry.present),
+      inject.injected(appRoot, routesPath).map((entry) => entry.present),
       [false, false],
     );
 
     inject.injectAll(appRoot, routesPath);
-    assert.deepEqual(
-      inject.injected(appRoot).map((entry) => entry.present),
-      [true, true],
-    );
+    const state = inject.injected(appRoot, routesPath);
+    assert.deepEqual(state.map((entry) => entry.present), [true, true]);
+    assert.deepEqual(state.map((entry) => entry.current), [true, true], "current router");
   });
 
   it("replaces a router another installer wrote", () => {
@@ -197,7 +215,7 @@ describe("injection", () => {
     const after = fs.readFileSync(file, "utf8");
     assert.equal(after.includes("BYOK-HTTP11-ROUTER-V2"), false, "theirs is gone");
     assert.equal(after.includes("theirs"), false);
-    assert.ok(after.includes(HEADER));
+    assert.ok(after.startsWith("/* CURSOR-BYOK-ROUTER-3 "));
     assert.ok(after.endsWith("// original bundle\n"), "original bytes kept");
   });
 

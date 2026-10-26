@@ -211,13 +211,16 @@ describe("local RPC surface", { skip }, () => {
     }
   });
 
-  it("still reports an unknown service as unimplemented", async () => {
+  it("answers an unknown service with an empty message rather than an error", async () => {
+    // A client newer than our schema calls methods we have never seen. Failing the
+    // call surfaces a toast; an empty body decodes as an empty message.
     const response = await fetch(`${base}/aiserver.v1.NopeService/Nope`, {
       method: "POST",
       body: "",
     });
-    const body = await response.json();
-    assert.equal(body.code, 12);
+
+    assert.equal(response.status, 200);
+    assert.equal((await response.arrayBuffer()).byteLength, 0);
   });
 });
 
@@ -230,3 +233,55 @@ function methodFor(root, route) {
     return null;
   }
 }
+
+describe("telemetry sink", { skip }, () => {
+  let instance;
+  let base;
+
+  before(async () => {
+    process.env.HOME = path.join(tmpRoot, "home-sink");
+    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state-sink");
+    const { createServer } = await import("../src/server.js");
+    instance = createServer({ extensionJs: bundle, port: 0 });
+    const address = await instance.listen();
+    base = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    await instance?.close();
+  });
+
+  it("accepts a report with no body", async () => {
+    const response = await fetch(`${base}/byok/sink`, {
+      method: "POST",
+      body: "{}",
+    });
+
+    assert.equal(response.status, 204);
+    assert.equal((await response.arrayBuffer()).byteLength, 0);
+  });
+
+  it("answers a route the cached schema does not know with an empty message", async () => {
+    // Cursor's client is newer than the extension bundle that carries the schema, so
+    // this happens in practice. An error would be a red toast; an empty message is a
+    // valid encoding of any response type.
+    const response = await fetch(`${base}/aiserver.v1.AiService/SomeFutureMethod`, {
+      method: "POST",
+      headers: { "content-type": "application/proto" },
+      body: Buffer.alloc(0),
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/proto");
+    assert.equal((await response.arrayBuffer()).byteLength, 0);
+  });
+
+  it("keeps the events channel open", async () => {
+    const controller = new AbortController();
+    const response = await fetch(`${base}/byok/events`, { signal: controller.signal });
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /text\/event-stream/);
+    controller.abort();
+  });
+});

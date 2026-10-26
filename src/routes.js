@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { loadRoot } from "./proto/schema.js";
 import { DEFAULT_PORT, ccursorDir, readJson, writeJson } from "./paths.js";
+import { SINK_HOSTS } from "./local/telemetry.js";
 
 /** Namespaces the local server answers in full. */
 export const OWNED_PACKAGES = ["aiserver.v1", "agent.v1", "anyrun.v1", "internapi.v1"];
@@ -68,6 +69,7 @@ export function buildRoutes(root) {
     $schemaVersion: 1,
     server: { host: "127.0.0.1", port: DEFAULT_PORT },
     redirect: [...ownedServices(root), ...REST_ROUTES.map((route) => `REST:${route}`)],
+    sink: [...SINK_HOSTS],
   };
 }
 
@@ -90,6 +92,7 @@ export function writeRoutes(extensionJs) {
   const changed =
     !current ||
     JSON.stringify(current.redirect) !== JSON.stringify(next.redirect) ||
+    JSON.stringify(current.sink) !== JSON.stringify(next.sink) ||
     current?.server?.port !== next.server.port;
 
   if (changed) {
@@ -100,6 +103,7 @@ export function writeRoutes(extensionJs) {
     path: file,
     services: next.redirect.length - REST_ROUTES.length,
     rest: REST_ROUTES.length,
+    sinks: next.sink.length,
     changed,
   };
 }

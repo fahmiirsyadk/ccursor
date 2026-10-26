@@ -10,7 +10,7 @@ import http from "node:http";
 import { after, describe, it } from "node:test";
 
 import { FrameReader, endFrame, frame, parseRpcPath } from "../src/proto/connect.js";
-import { pathOnly, rewriteUrl, shouldRedirect, install } from "../src/router.js";
+import { pathOnly, rewriteUrl, shouldRedirect, shouldSink, install } from "../src/router.js";
 
 describe("routing is decided by path, not host", () => {
   // The path is the part of the contract the client cannot vary: it is the RPC it
@@ -174,6 +174,72 @@ describe("router end to end", () => {
       assert.equal(hook, again);
     } finally {
       hook.uninstall();
+    }
+  });
+});
+
+describe("telemetry sinks", () => {
+  const sinks = ["metrics.cursor.sh", "mobile.events.data.microsoft.com", "api2.cursor.sh/aiserver.v1.AnalyticsService"];
+
+  it("matches a bare host", () => {
+    assert.equal(shouldSink("metrics.cursor.sh", "/api/123/envelope/", sinks), true);
+  });
+
+  it("matches a host and path prefix", () => {
+    assert.equal(shouldSink("api2.cursor.sh", "/aiserver.v1.AnalyticsService/Batch", sinks), true);
+    assert.equal(shouldSink("api2.cursor.sh", "/aiserver.v1.AgentService/RunSSE", sinks), false);
+  });
+
+  it("leaves the marketplace and updater alone", () => {
+    assert.equal(shouldSink("marketplace.cursorapi.com", "/_apis/public/gallery", sinks), false);
+    assert.equal(shouldSink("api2.cursor.sh", "/aiserver.v1.AiService/AvailableModels", sinks), false);
+  });
+
+  it("is case insensitive", () => {
+    assert.equal(shouldSink("METRICS.CURSOR.SH", "/", sinks), true);
+  });
+
+  it("ignores junk rules", () => {
+    assert.equal(shouldSink("metrics.cursor.sh", "/", [null, 3, ""]), false);
+  });
+});
+
+describe("sink end to end", () => {
+  it("answers a telemetry host without reaching the network", async () => {
+    const hits = [];
+    const local = http.createServer((req, res) => {
+      hits.push(req.url);
+      res.writeHead(204);
+      res.end();
+    });
+    await new Promise((resolve) => local.listen(0, "127.0.0.1", resolve));
+    const port = local.address().port;
+
+    const hook = install({
+      localBase: `http://127.0.0.1:${port}`,
+      routes: [],
+      sinks: ["metrics.cursor.sh"],
+    });
+
+    try {
+      const status = await new Promise((resolve, reject) => {
+        const req = http.request(
+          "https://metrics.cursor.sh/api/4508016051945472/envelope/",
+          { method: "POST" },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode));
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+      assert.equal(status, 204);
+      assert.deepEqual(hits, ["/byok/sink"]);
+    } finally {
+      hook.uninstall();
+      await new Promise((resolve) => local.close(resolve));
     }
   });
 });

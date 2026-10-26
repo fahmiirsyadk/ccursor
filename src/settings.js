@@ -77,7 +77,7 @@ export function ensureRoutes(extensionJs) {
   const result = routes.writeRoutes(extensionJs);
 
   if (result.changed) {
-    ok(`routes.json: ${result.services} services + ${result.rest} REST paths`);
+    ok(`routes.json: ${result.services} services, ${result.rest} REST paths, ${result.sinks} sinks`);
     return "patched";
   }
   detail(`routes.json ok (${result.services} services)`);
