@@ -19,14 +19,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import {
-  DEFAULT_PORT,
-  providersFile,
-  readJson,
-  routesFile,
-  settingsFile,
-  writeJson,
-} from "./paths.js";
+import { DEFAULT_PORT, providersFile, readJson, settingsFile, writeJson } from "./paths.js";
+import * as routes from "./routes.js";
 import { detail, ok, warn } from "./ui.js";
 
 export const DISABLE_HTTP2 = "cursor.general.disableHttp2";
@@ -64,44 +58,29 @@ export function ensureSettings() {
   return "already";
 }
 
-/** Make routes.json agree with the port the extension actually uses. */
-export function ensureRoutes() {
-  const file = routesFile();
-  const current = readJson(file);
-
-  if (current === null) {
-    warn(`${file} missing or unreadable; run 'cursor-byok apply' with the installer`);
-    return "missing";
-  }
-  if (!current.redirect || !current.server) {
-    warn(`${file} does not look like a ccursor routes file; skipping`);
-    return "unexpected";
-  }
-  if (typeof current.server !== "object" || current.server === null) {
-    warn(`${file}: 'server' is not an object; skipping`);
-    return "unexpected";
+/**
+ * Write the redirect list.
+ *
+ * The list is derived from Cursor's schema (see src/routes.js), so a method added in
+ * a Cursor release is diverted without a code change. Previously this file was
+ * owned by the third-party installer; we own it now, which is what makes the
+ * router independent of them.
+ *
+ * @param {string} extensionJs path to the BYOK extension bundle (the schema source)
+ */
+export function ensureRoutes(extensionJs) {
+  if (!extensionJs) {
+    warn("routes.json not written: no schema source");
+    return "skipped";
   }
 
-  let changed = false;
-  if (current.server.port !== DEFAULT_PORT) {
-    current.server.port = DEFAULT_PORT;
-    changed = true;
-  }
-  if (!current.server.host) {
-    current.server.host = "127.0.0.1";
-    changed = true;
-  }
-  if (current.byokMode !== 1) {
-    current.byokMode = 1;
-    changed = true;
-  }
+  const result = routes.writeRoutes(extensionJs);
 
-  if (changed) {
-    writeJson(file, current);
-    ok(`routes.json: server.port -> ${DEFAULT_PORT}`);
+  if (result.changed) {
+    ok(`routes.json: ${result.services} services + ${result.rest} REST paths`);
     return "patched";
   }
-  detail(`routes.json ok (port ${DEFAULT_PORT})`);
+  detail(`routes.json ok (${result.services} services)`);
   return "already";
 }
 

@@ -10,6 +10,7 @@ import { after, afterEach, describe, it } from "node:test";
 
 import * as locate from "../src/locate.js";
 import * as settings from "../src/settings.js";
+import * as routes from "../src/routes.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-byok-cfg-"));
 after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
@@ -86,37 +87,47 @@ describe("settings", () => {
 });
 
 describe("routes", () => {
-  it("synchronises the port", () => {
-    const home = path.join(tmpRoot, "h3");
-    const dir = path.join(home, ".ccursor");
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, "routes.json");
-    fs.writeFileSync(file, JSON.stringify({ byokMode: 0, server: { host: "127.0.0.1", port: 1 }, redirect: [] }));
-    process.env.HOME = home;
+  // The routes file is ours now: it is derived from Cursor's schema, not written by
+  // a third-party installer. These tests pin the derivation, not a hand-written list.
+  function fakeRoot(services) {
+    const nested = services.map((full) => {
+      const name = full.split(".").pop();
+      return { fullName: `.${full}`, methods: { Ping: {} }, name };
+    });
+    return { nestedArray: nested };
+  }
 
-    assert.equal(settings.ensureRoutes(), "patched");
+  it("builds one whole-service rule per owned service", () => {
+    const root = fakeRoot([
+      "aiserver.v1.AiService",
+      "aiserver.v1.DashboardService",
+      "agent.v1.AgentService",
+    ]);
 
-    const written = JSON.parse(fs.readFileSync(file, "utf8"));
-    assert.equal(written.server.port, settings.DEFAULT_PORT ?? 39831);
-    assert.equal(written.byokMode, 1);
+    const built = routes.buildRoutes(root);
+    assert.deepEqual(
+      built.redirect.filter((rule) => !rule.startsWith("REST:")),
+      ["agent.v1.AgentService", "aiserver.v1.AiService", "aiserver.v1.DashboardService"],
+    );
   });
 
-  it("reports a missing file", () => {
-    process.env.HOME = path.join(tmpRoot, "h4");
-    assert.equal(settings.ensureRoutes(), "missing");
+  it("leaves services outside the owned namespaces alone", () => {
+    const root = fakeRoot(["aiserver.v1.AiService", "other.v1.Thing"]);
+    const built = routes.buildRoutes(root);
+
+    assert.equal(built.redirect.includes("other.v1.Thing"), false);
   });
 
-  it("leaves an unexpected shape alone", () => {
-    const home = path.join(tmpRoot, "h5");
-    const dir = path.join(home, ".ccursor");
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, "routes.json");
-    const original = { something: "else" };
-    fs.writeFileSync(file, JSON.stringify(original));
-    process.env.HOME = home;
+  it("includes the REST endpoints the renderer fetches directly", () => {
+    const built = routes.buildRoutes(fakeRoot([]));
+    assert.ok(built.redirect.includes("REST:/auth/stripe_profile"));
+    assert.ok(built.redirect.includes("REST:/auth/poll"));
+  });
 
-    assert.equal(settings.ensureRoutes(), "unexpected");
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), original);
+  it("points at the local server", () => {
+    const built = routes.buildRoutes(fakeRoot([]));
+    assert.equal(built.server.host, "127.0.0.1");
+    assert.equal(built.server.port, 39831);
   });
 });
 

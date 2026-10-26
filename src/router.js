@@ -1,14 +1,25 @@
 /**
  * HTTP/1.1 router.
  *
- * Cursor sends its AI traffic to `api2.cursor.sh`. This module replaces
- * `http.request` / `https.request` in the extension host so a matching call is
- * rewritten to the local server instead.
+ * Cursor's extension hosts make their API calls through `http.request` /
+ * `https.request`. This module replaces both, so a call can be answered by the
+ * local server instead of leaving the machine.
+ *
+ * The decision is made on the **path**, not the host:
+ *
+ *   /agent.v1.AgentService/RunSSE          -> local
+ *   /aiserver.v1.AiService/AvailableModels -> local
+ *   /auth/stripe_profile                   -> local
+ *   anything else                          -> untouched
+ *
+ * Matching on the path means this does not depend on Cursor's hostnames, which
+ * change between releases and between services. The path is the one part of the
+ * contract the client cannot vary: it is the RPC it is calling.
  *
  * Two properties matter:
  *
- * 1. Only matching host + path pairs are diverted. Everything else — telemetry,
- *    SCM, marketplace, the updater — keeps going to Cursor, unchanged.
+ * 1. Only listed paths are diverted. Marketplace, updates and extension downloads
+ *    keep working.
  * 2. HTTP/1.1 only. Cursor's transport factory picks HTTP/2 unless
  *    `cursor.general.disableHttp2` is true, and `node:http2` never touches
  *    `http.request`, so an HTTP/2 session bypasses this entirely. That is why the
@@ -22,20 +33,6 @@ import https from "node:https";
 
 const GUARD = Symbol.for("cursor-byok.router.installed");
 
-/** Hosts that carry Cursor's API traffic. */
-export const CURSOR_HOSTS = [
-  /^api\d*\.cursor\.sh$/,
-  /^api\.playground\.cursor\.sh$/,
-  /^gcpp\.cursor\.sh$/,
-  /^repo\d*\.cursor\.sh$/,
-];
-
-/** Is this hostname one we may divert? */
-export function isCursorHost(hostname) {
-  const host = String(hostname ?? "").toLowerCase().replace(/^\[|\]$/g, "");
-  return CURSOR_HOSTS.some((re) => re.test(host));
-}
-
 /** Path without query string or fragment. */
 export function pathOnly(pathname) {
   const raw = String(pathname ?? "");
@@ -48,7 +45,7 @@ export function pathOnly(pathname) {
 /**
  * Decide whether a request should be diverted.
  *
- * `routes` mirrors Cursor++'s routes.json shape so an existing file keeps working:
+ * `routes` is a list of rules:
  *   "aiserver.v1.AiService/AvailableModels"   one method
  *   "aiserver.v1.AiService"                   whole service
  *   "REST:/auth/stripe_profile"               a plain HTTP path
@@ -103,6 +100,20 @@ function localHeaders(headers, windowId) {
   if (windowId !== undefined && !("x-client-wid" in out)) out["x-client-wid"] = String(windowId);
   out["x-byok-route-source"] = "router";
   return out;
+}
+
+/** Is this request already addressed to the local server? */
+function isLocalTarget(parsed, localBase) {
+  try {
+    const local = new URL(localBase);
+    return (
+      parsed.hostname === local.hostname &&
+      (parsed.port || (parsed.protocol === "https:" ? "443" : "80")) ===
+        (local.port || (local.protocol === "https:" ? "443" : "80"))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -183,13 +194,20 @@ export function install({ localBase, routes, windowId, onEvent } = {}) {
           const protocol = input.protocol ?? (transport === "https" ? "https:" : "http:");
           const host = input.hostname ?? input.host;
           if (!host) return passthrough();
-          parsed = new URL(`${protocol}//${host}${input.path ?? input.pathname ?? "/"}`);
+          // Keep the port: dropping it makes the local server look like a remote
+          // host, and a diverted call would be diverted again, forever.
+          const port = input.port ? `:${input.port}` : "";
+          parsed = new URL(`${protocol}//${host}${port}${input.path ?? input.pathname ?? "/"}`);
         }
       } catch {
         return passthrough();
       }
 
-      if (parsed && isCursorHost(parsed.hostname) && shouldRedirect(parsed.pathname, routes)) {
+      if (
+        parsed &&
+        !isLocalTarget(parsed, localBase) &&
+        shouldRedirect(parsed.pathname, routes)
+      ) {
         return divert(parsed, opts, cb);
       }
 

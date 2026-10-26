@@ -6,14 +6,17 @@
  * them into a Root with full encode/decode support, so there is no codec and no
  * descriptor parser to maintain here — only the scan that finds the blobs.
  *
- * The schema is read from the installed app at runtime, so it always matches the
- * Cursor version on disk.
+ * The descriptors are cached by `apply` (see proto/cache.js), so the server can
+ * start without the extension bundle being present. When the bundle is newer than
+ * the cache, the bundle wins: a Cursor update may have changed the protocol.
  */
 
+import fs from "node:fs";
 import protobuf from "protobufjs";
 import "protobufjs/ext/descriptor.js";
 
 import { readDescriptors } from "./descriptor.js";
+import * as schemaCache from "./cache.js";
 
 const cache = new Map();
 
@@ -55,19 +58,34 @@ function toDescriptorSet(buffers) {
 /**
  * Build one Root containing every schema Cursor's bundle carries.
  *
+ * The descriptors are read from the local copy when there is one, and from the
+ * bundle otherwise. That keeps the server working when the BYOK extension is not
+ * installed or not running, which is the case once `apply` has cached the schema.
+ *
  * @param {string} extensionJs path to the BYOK extension bundle
  * @returns {import("protobufjs").Root}
  */
 export function loadRoot(extensionJs) {
   if (cache.has(extensionJs)) return cache.get(extensionJs);
 
-  const descriptors = readDescriptors(extensionJs);
-  if (descriptors.length === 0) {
-    throw new Error("no protobuf descriptors found in the extension bundle");
+  let raws = extensionJs ? schemaCache.load() : null;
+
+  // Prefer the bundle when it is newer than the copy: a Cursor update may have
+  // changed the protocol, and the cache would then be wrong in a subtle way.
+  if (extensionJs && fs.existsSync(extensionJs) && !schemaCache.isFreshFor(extensionJs)) {
+    const descriptors = readDescriptors(extensionJs);
+    if (descriptors.length === 0) throw new Error("no protobuf descriptors found in the extension bundle");
+    raws = descriptors.map((d) => d.raw);
+  }
+
+  if (!raws || raws.length === 0) {
+    throw new Error(
+      "no protobuf schema available: run 'cursor-byok apply' to cache it from the installed app",
+    );
   }
 
   const root = protobuf.Root.fromDescriptor(
-    toDescriptorSet([...descriptors.map((d) => d.raw), emptyDescriptor()]),
+    toDescriptorSet([...raws, emptyDescriptor()]),
     { keepCase: true },
   );
 

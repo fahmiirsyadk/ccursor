@@ -10,23 +10,29 @@ import http from "node:http";
 import { after, describe, it } from "node:test";
 
 import { FrameReader, endFrame, frame, parseRpcPath } from "../src/proto/connect.js";
-import { isCursorHost, pathOnly, rewriteUrl, shouldRedirect, install } from "../src/router.js";
+import { pathOnly, rewriteUrl, shouldRedirect, install } from "../src/router.js";
 
-describe("cursor host matching", () => {
-  it("accepts Cursor API hosts", () => {
-    for (const host of ["api2.cursor.sh", "api3.cursor.sh", "api.cursor.sh", "gcpp.cursor.sh"]) {
-      assert.equal(isCursorHost(host), true, host);
+describe("routing is decided by path, not host", () => {
+  // The path is the part of the contract the client cannot vary: it is the RPC it
+  // is calling. Hostnames change between Cursor releases; matching on them would
+  // fail silently.
+  const routes = ["agent.v1.AgentService/RunSSE"];
+
+  it("diverts the same path on any host", () => {
+    for (const host of [
+      "api2.cursor.sh",
+      "api4.cursor.sh",
+      "gcpp.cursor.sh",
+      "some-new-host.cursor.sh",
+    ]) {
+      const url = `https://${host}/agent.v1.AgentService/RunSSE`;
+      assert.equal(shouldRedirect(new URL(url).pathname, routes), true, host);
     }
   });
 
-  it("rejects everything else", () => {
-    for (const host of ["api.openai.com", "cursor.com", "api2.cursor.sh.evil.test", "localhost"]) {
-      assert.equal(isCursorHost(host), false, host);
-    }
-  });
-
-  it("is case insensitive", () => {
-    assert.equal(isCursorHost("API2.CURSOR.SH"), true);
+  it("leaves other paths alone regardless of host", () => {
+    assert.equal(shouldRedirect("/marketplace/items", routes), false);
+    assert.equal(shouldRedirect("/update/check", routes), false);
   });
 });
 

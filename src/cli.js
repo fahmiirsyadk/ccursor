@@ -22,6 +22,10 @@ import { fileURLToPath } from "node:url";
 import * as bundles from "./bundles.js";
 import * as ccursor from "./ccursor.js";
 import * as daemon from "./daemon.js";
+import * as extensionHost from "./extensionHost.js";
+import * as inject from "./inject.js";
+import * as routes from "./routes.js";
+import * as schemaCache from "./proto/cache.js";
 import * as seed from "./seed.js";
 import * as settings from "./settings.js";
 import * as state from "./state.js";
@@ -66,8 +70,12 @@ export async function cmdApply(args = {}) {
   info(`app root: ${appRoot}`);
   detail(`version ${version ?? "unknown"}`);
 
-  if (!args.skipInstaller && !(await ccursor.install(appRoot))) {
-    warn("continuing without the hook installer; transport will not work");
+  // The extension is the one thing we do not ship: it is where the protobuf schema
+  // lives, and it is a large third-party artifact. Everything else below is ours.
+  if (args.skipInstaller) {
+    detail("skipping extension install (--skip-installer)");
+  } else if (!(await ccursor.ensureExtension(appRoot))) {
+    warn("BYOK extension unavailable; the server will fall back to the cached schema");
   }
 
   const files = bundles.bundlePaths(appRoot);
@@ -123,7 +131,43 @@ export async function cmdApply(args = {}) {
   }
 
   settings.ensureSettings();
-  settings.ensureRoutes();
+
+  // Cache the schema first: routes and the server both depend on it, and it is the
+  // one thing that still comes from the extension bundle.
+  const extensionJs = ccursor.schemaSource(appRoot);
+  if (extensionJs) {
+    try {
+      const cached = schemaCache.save(extensionJs);
+      ok(`schema: ${cached.count} descriptors ${cached.reused ? "already cached" : "cached"}`);
+    } catch (error) {
+      warn(`schema not cached: ${error.message}`);
+    }
+  } else {
+    warn("BYOK extension not installed; using the cached schema");
+  }
+
+  settings.ensureRoutes(extensionJs);
+
+  // Replace whatever router is in the extension hosts with ours.
+  const injected = inject.injectAll(appRoot, routes.routesPath());
+  for (const entry of injected) {
+    if (entry.status === "missing") warn(`${entry.label}: extension host not found`);
+    else ok(`${entry.label}: router ${entry.status === "already" ? "already present" : "injected"}`);
+  }
+
+  // Narrow the extension hash check: drop only the extensions we modify, and undo
+  // any broad `if(!1)` a previous installer left behind.
+  try {
+    const verification = extensionHost.patchVerification(appRoot);
+    if (verification.exempted.length > 0) {
+      ok(`extension verification: exempted ${verification.exempted.join(", ")}`);
+    }
+    if (verification.restored) ok("extension verification: check restored for other extensions");
+    if (!verification.changed) detail("extension verification: already correct");
+  } catch (error) {
+    warn(`extension verification not patched: ${error.message}`);
+  }
+
   state.writeMarker(appRoot, files, version);
 
   if (!args.skipSeed) seed.reportSeed(seed.seedCatalog({ dryRun: args.dryRun }));
@@ -160,9 +204,25 @@ export async function cmdStatus() {
   }
 
   heading("transport");
-  console.log(`  BYOK extension      : ${ext ? "installed" : "MISSING"}`);
+  console.log(`  BYOK extension      : ${ext ? "installed" : "MISSING (schema cache only)"}`);
   console.log(`  router always-local : ${alwaysLocal ? "yes" : "NO"}`);
   console.log(`  router agent-host   : ${agentHost ? "yes" : "NO"}`);
+
+  const verification = extensionHost.describe(appRoot);
+  console.log(
+    `  extension hashes    : ${
+      !verification.table
+        ? "table not found"
+        : verification.disabled
+          ? "NOT VERIFIED (broad bypass)"
+          : `${verification.verified} verified, ${verification.exempt.length} exempt`
+    }`,
+  );
+
+  const schema = schemaCache.describe();
+  console.log(
+    `  schema cache        : ${schema.present ? `${schema.count} descriptors` : "MISSING"}`,
+  );
 
   heading("configuration");
   const cfg = readJsonOr(settingsFile());
@@ -170,6 +230,8 @@ export async function cmdStatus() {
   const routes = readJsonOr(routesFile());
   const port = routes?.server?.port ?? null;
   console.log(`  routes.json port    : ${port}`);
+  const ruleCount = Array.isArray(routes?.redirect) ? routes.redirect.length : 0;
+  console.log(`  redirect rules      : ${ruleCount}`);
   console.log(`  providers           : ${settings.describeProviders()}`);
   console.log(`  BYOK server         : ${await daemon.describe(port ?? DEFAULT_PORT)}`);
   return 0;
@@ -217,10 +279,24 @@ export async function cmdDoctor() {
     problems.push("cursor.general.disableHttp2 is not true -> agent turns will fail");
   }
 
+  const verification = extensionHost.describe(appRoot);
+  if (verification.disabled) {
+    problems.push("extension hash check is disabled wholesale -> run apply to narrow it");
+  } else if (verification.exempt.length === 0) {
+    problems.push("modified extension is still hash-verified -> run apply");
+  }
+
+  const schema = schemaCache.describe();
+  if (!schema.present) {
+    problems.push("protobuf schema not cached -> run apply");
+  }
+
   const routes = readJsonOr(routesFile());
   const port = routes?.server?.port;
   if (!port) {
     problems.push("routes.json missing -> run apply");
+  } else if (!Array.isArray(routes.redirect) || routes.redirect.length === 0) {
+    problems.push("routes.json has no redirect rules -> run apply");
   } else if ((await daemon.health(port)) !== "byok") {
     problems.push(`BYOK server not answering as ours on port ${port} -> run 'cursor-byok run'`);
   }
