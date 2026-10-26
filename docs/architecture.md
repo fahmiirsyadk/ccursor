@@ -280,16 +280,30 @@ nothing is proxied to Cursor:
 | `AnalyticsService/Batch` | accepted and dropped |
 | auth endpoints | a local session |
 | everything else in the schema | a well-formed empty response of the declared type |
+| RPCs newer than our schema | an empty message, recorded in `/byok/debug` |
+| telemetry hosts | `204`, and nothing leaves the machine |
 
 The last row is what keeps the IDE quiet. An empty message is something the client
 already knows how to render; an error is a red toast. A service that does not exist
 in Cursor's own schema still returns a Connect `unimplemented` error, so a typo is
 visible rather than silently empty.
 
-## What is not diverted
+## How the router decides
 
-`routes.json` lists the redirect set. Anything not in it — telemetry from the
-renderer, SCM and PR lookups, the marketplace, feature gates, the updater, tab
-completion, cloud agents — still goes to Cursor, because the router only rewrites
-the calls it was told to rewrite. Those features keep working, and they are not
-billed to your key.
+Two different questions, matched on two different things.
+
+**Is this an RPC we answer?** Matched on the **path**. The path is the part of the
+contract the client cannot vary — it is the RPC it is calling. Hostnames change
+between Cursor releases and between services; method names do not. The list is
+derived from Cursor's own schema, so a method added in a release is diverted without
+a code change.
+
+**Is this a report we can drop?** Matched on the **host**. Error tracking,
+feature-flag assignment and Microsoft's inherited VS Code telemetry carry no answer
+the UI renders, so they are answered locally with `204` and never reach the network.
+Marketplace and update hosts are deliberately absent: blocking those would break
+extension installs and updates.
+
+Everything else — SCM and PR lookups, the marketplace, the updater, tab completion,
+cloud agents — still goes to Cursor, because the router only rewrites what it was
+told to rewrite. Those features keep working, and they are not billed to your key.

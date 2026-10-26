@@ -62,7 +62,13 @@ installed app, so it keeps working when Cursor changes shape.
 
 Nothing is forwarded to Cursor's backend. Model listing, the agent loop, tool
 execution, usage panels and analytics are all answered locally, so the account
-needs no plan, no seat, and no data leaves the machine.
+needs no plan and no seat.
+
+Telemetry is answered locally too. `routes.json` lists the hosts that only carry
+reports — error tracking, feature-flag assignment, Microsoft's inherited VS Code
+telemetry — and the router replies to them itself with `204` instead of letting them
+leave the machine. Marketplace and update hosts are deliberately not in that list:
+blocking those would break extension installs and updates.
 
 **One agent turn:**
 
@@ -181,6 +187,7 @@ endpoint. Full field reference: [docs/provider-setup.md](docs/provider-setup.md)
 | `revert` | Restore the bundles Cursor shipped with. |
 | `run` | Re-apply if needed, seed the catalog, start the server, launch Cursor. |
 | `serve` | Run the server in the foreground (`--port`, `--app`). |
+| `stop` | Stop the background server started by `run`. |
 | `stop` | Stop the background server started by `run`. |
 | `update` | Extract a new AppImage into a staging tree, patch it, verify, swap. |
 | `update --rollback` | Go back to the previous tree. |
