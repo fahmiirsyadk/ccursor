@@ -84,6 +84,19 @@ export function ensureRoutes(sources) {
   return "already";
 }
 
+/**
+ * How many configured models accept images.
+ *
+ * A model marked `supportsImages: false` never receives one, so the IDE's attach
+ * button appears to do nothing. Reporting the count makes that visible.
+ */
+export function describeVision() {
+  const data = readJson(providersFile());
+  const models = (data?.providers ?? []).flatMap((provider) => provider.models ?? []);
+  const withoutImages = models.filter((model) => model.supportsImages === false).length;
+  return { total: models.length, withoutImages };
+}
+
 /** One-line summary of configured providers, for status output. */
 export function describeProviders() {
   const data = readJson(providersFile());

@@ -18,6 +18,7 @@ export const TOOL_TYPES = {
   Shell: "shellToolCall",
   Grep: "grepToolCall",
   Glob: "globToolCall",
+  Task: "taskToolCall",
 };
 
 /** Exec request cases, from ExecServerMessage. */
@@ -29,7 +30,23 @@ export const EXEC_CASES = {
   Shell: "shellArgs",
   Grep: "grepArgs",
   Glob: "grepArgs",
+  Task: "subagentArgs",
 };
+
+/** Subagent types Cursor defines, as the names its exec args take. */
+export const SUBAGENT_TYPES = new Set([
+  "explore",
+  "debug",
+  "bash",
+  "shell",
+  "browser_use",
+  "computer_use",
+  "media_review",
+  "vm_setup_helper",
+  "cursor_guide",
+  "watch_video",
+  "custom",
+]);
 
 /** Normalise line endings, as Cursor does before writing. */
 function normaliseText(text) {
@@ -254,7 +271,62 @@ export const TOOLS = [
       };
     },
   },
+
+  {
+    name: "Task",
+    description:
+      "Launch a subagent to handle a multi-step task autonomously. " +
+      "Use subagent_type \"explore\" for broad codebase questions; for a narrow " +
+      "lookup, use Grep or Read directly. Several Task calls in one turn run " +
+      "concurrently, so split independent areas of the codebase across them.",
+    parameters: {
+      type: "object",
+      required: ["description", "prompt"],
+      properties: {
+        description: { type: "string", description: "Short description of the task." },
+        prompt: { type: "string", description: "What the subagent should do." },
+        subagent_type: {
+          type: "string",
+          description: "explore, debug, bash, browser_use, media_review, or custom.",
+        },
+        resume: { type: "string", description: "Agent id to resume, or \"self\"." },
+        run_in_background: {
+          type: "boolean",
+          description: "Return immediately and let the subagent run in the background.",
+        },
+      },
+    },
+    // TaskArgs.subagent_type is a message with one empty variant per type.
+    startedArgs: (input) => {
+      const type = subagentTypeName(input);
+      return {
+        description: String(input.description ?? ""),
+        prompt: String(input.prompt ?? ""),
+        ...(type ? { subagent_type: { [type]: {} } } : {}),
+        ...(typeof input.resume === "string" ? { resume: input.resume } : {}),
+      };
+    },
+    // SubagentArgs.subagent_type is the plain name, and it wants a model id.
+    buildArgs: (input, toolCallId, context = {}) => ({
+      tool_call_id: toolCallId,
+      subagent_type: subagentTypeName(input) || "explore",
+      model_id: context.modelId ?? "",
+      prompt: String(input.prompt ?? input.description ?? ""),
+      readonly: input.readonly === true,
+      ...(typeof input.run_in_background === "boolean"
+        ? { run_in_background: input.run_in_background }
+        : {}),
+      ...(context.conversationId ? { parent_conversation_id: context.conversationId } : {}),
+    }),
+  },
 ];
+
+/** The subagent type, defaulted and checked against the types Cursor defines. */
+function subagentTypeName(input) {
+  const raw = input.subagent_type ?? input.subagentType ?? "explore";
+  const name = String(raw).trim().toLowerCase().replace(/-/g, "_");
+  return SUBAGENT_TYPES.has(name) ? name : "explore";
+}
 
 const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
 
@@ -262,7 +334,7 @@ const byName = new Map(TOOLS.map((tool) => [tool.name, tool]));
 export function findTool(name) {
   if (byName.has(name)) return byName.get(name);
   // Cursor's Anthropic profile calls Read "ReadFile" and Grep "rg".
-  const alias = { ReadFile: "Read", rg: "Grep", ApplyPatch: "Edit" }[name];
+  const alias = { ReadFile: "Read", rg: "Grep", ApplyPatch: "Edit", Subagent: "Task" }[name];
   return alias ? byName.get(alias) : null;
 }
 
@@ -314,6 +386,22 @@ export function toToolResult(toolName, result) {
           message: "",
         },
       };
+
+    case "Task": {
+      // The editor reports a SubagentResult; the tool call declares a TaskResult.
+      // Only the shared fields carry over, and the final message is read from the
+      // exec result directly.
+      if (outcome !== "success") return result;
+      return {
+        success: {
+          agent_id: value.agent_id ?? "",
+          is_background: (value.background_reason ?? 0) !== 0,
+          duration_ms: 0,
+          result_suffix: "",
+          transcript_path: value.transcript_path ?? "",
+        },
+      };
+    }
 
     case "Glob": {
       if (outcome !== "success") return result;
@@ -408,6 +496,16 @@ function renderSuccess(toolName, value) {
     case "Glob": {
       const files = value?.files ?? [];
       return files.length > 0 ? files.join("\n") : "No files matched.";
+    }
+
+    case "Task": {
+      // The subagent's answer is what the model needs; the agent id is bookkeeping.
+      const message = value?.final_message ?? value?.finalMessage ?? "";
+      const count = value?.tool_call_count ?? 0;
+      if (message.length === 0) {
+        return `The subagent finished without a message (${count} tool calls).`;
+      }
+      return count > 0 ? `${message}\n\n[subagent used ${count} tool calls]` : message;
     }
 
     default:

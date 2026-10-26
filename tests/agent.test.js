@@ -415,3 +415,128 @@ describe("agent turn", { skip }, () => {
     assert.equal((await response.arrayBuffer()).byteLength, 0);
   });
 });
+
+describe("images", () => {
+  /** A one-pixel PNG, as Cursor would inline it. */
+  const PNG = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  it("reads an image inlined in the data field", async () => {
+    const { imagesFrom } = await import("../src/agent/request.js");
+    const images = imagesFrom({
+      action: {
+        user_message_action: {
+          user_message: {
+            text: "what is this?",
+            selected_context: { selected_images: [{ mime_type: "image/png", data: PNG }] },
+          },
+        },
+      },
+    });
+
+    assert.equal(images.length, 1);
+    assert.equal(images[0].mimeType, "image/png");
+    assert.equal(images[0].data, PNG.toString("base64"));
+  });
+
+  it("reads an image carried with its blob id", async () => {
+    const { imagesFrom } = await import("../src/agent/request.js");
+    const images = imagesFrom({
+      action: {
+        user_message_action: {
+          user_message: {
+            selected_context: {
+              selected_images: [{ mime_type: "image/jpeg", blob_id_with_data: { blob_id: "x", data: PNG } }],
+            },
+          },
+        },
+      },
+    });
+
+    assert.equal(images.length, 1);
+    assert.equal(images[0].mimeType, "image/jpeg");
+  });
+
+  it("skips an image whose bytes were uploaded rather than inlined", async () => {
+    const { imagesFrom } = await import("../src/agent/request.js");
+    const images = imagesFrom({
+      action: {
+        user_message_action: {
+          user_message: {
+            selected_context: { selected_images: [{ mime_type: "image/png", blob_id: "abc" }] },
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(images, []);
+  });
+
+  it("attaches images to the user turn as blocks", async () => {
+    const { conversation } = await import("../src/agent/request.js");
+    const messages = conversation({
+      action: {
+        user_message_action: {
+          user_message: {
+            text: "describe this",
+            selected_context: { selected_images: [{ mime_type: "image/png", data: PNG }] },
+          },
+        },
+      },
+    });
+
+    const last = messages.at(-1);
+    assert.equal(last.role, "user");
+    assert.ok(Array.isArray(last.content));
+    assert.deepEqual(last.content[0], { type: "text", text: "describe this" });
+    assert.equal(last.content[1].type, "image");
+    assert.equal(last.content[1].data, PNG.toString("base64"));
+  });
+
+  it("keeps an image-only turn", async () => {
+    const { conversation } = await import("../src/agent/request.js");
+    const messages = conversation({
+      action: {
+        user_message_action: {
+          user_message: {
+            selected_context: { selected_images: [{ mime_type: "image/png", data: PNG }] },
+          },
+        },
+      },
+    });
+
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].content.length, 1);
+    assert.equal(messages[0].content[0].type, "image");
+  });
+
+  it("reads images out of conversation history", async () => {
+    const { conversation } = await import("../src/agent/request.js");
+    const messages = conversation({
+      action: {
+        user_message_action: {
+          user_message: { text: "and this one?" },
+          conversation_history: {
+            messages: [
+              {
+                user: {
+                  content: [
+                    { text: { text: "earlier" } },
+                    { image: { data: PNG.toString("base64"), mime_type: "image/png" } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const first = messages[0];
+    assert.ok(Array.isArray(first.content));
+    assert.equal(first.content[0].text, "earlier");
+    assert.equal(first.content[1].type, "image");
+  });
+});

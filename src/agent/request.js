@@ -37,10 +37,67 @@ function protoTextOf(parts) {
     .join("");
 }
 
+/**
+ * Read one inline image.
+ *
+ * SelectedImage carries its bytes in a oneof: `data` directly, or
+ * `blob_id_with_data` with the bytes alongside the id. An image that was uploaded
+ * rather than inlined has only an id, and its bytes never reach this process, so it
+ * is skipped with a note instead of becoming an empty block.
+ */
+function readImage(image) {
+  const mimeType = image?.mime_type || "image/png";
+
+  const raw =
+    image?.data?.length
+      ? image.data
+      : image?.blob_id_with_data?.data?.length
+        ? image.blob_id_with_data.data
+        : null;
+
+  if (!raw) return null;
+  return {
+    type: "image",
+    mimeType,
+    data: Buffer.isBuffer(raw) ? raw.toString("base64") : Buffer.from(raw).toString("base64"),
+  };
+}
+
+/** Every inline image attached to this turn. */
+export function imagesFrom(runRequest) {
+  const selected = runRequest?.action?.user_message_action?.user_message?.selected_context;
+  const out = [];
+
+  for (const image of selected?.selected_images ?? []) {
+    const block = readImage(image);
+    if (block) out.push(block);
+  }
+
+  return out;
+}
+
 /** Convert a protobuf ConversationHistoryMessage. */
 function fromHistoryMessage(message) {
   if (message.user) {
-    return { role: ROLE_USER, content: protoTextOf(message.user.content) };
+    const blocks = [];
+    const text = protoTextOf(message.user.content);
+    if (text.length > 0) blocks.push({ type: "text", text });
+
+    for (const part of message.user.content ?? []) {
+      // History images are already base64 strings, not bytes.
+      if (typeof part?.image?.data === "string" && part.image.data.length > 0) {
+        blocks.push({
+          type: "image",
+          mimeType: part.image.mime_type || "image/png",
+          data: part.image.data,
+        });
+      }
+    }
+
+    return {
+      role: ROLE_USER,
+      content: blocks.some((block) => block.type === "image") ? blocks : text,
+    };
   }
 
   if (message.assistant) {
@@ -190,10 +247,20 @@ export function conversation(runRequest, queued) {
   }
 
   const text = userText(runRequest, queued);
-  if (text.length > 0) {
+  const images = imagesFrom(runRequest);
+
+  if (text.length > 0 || images.length > 0) {
     const last = unique[unique.length - 1];
-    const alreadyThere = last?.role === ROLE_USER && last.content === text;
-    if (!alreadyThere) unique.push({ role: ROLE_USER, content: text });
+    const alreadyThere = last?.role === ROLE_USER && last.content === text && images.length === 0;
+
+    if (!alreadyThere) {
+      // A turn with images needs block content; text alone cannot carry them.
+      const content =
+        images.length === 0
+          ? text
+          : [...(text.length > 0 ? [{ type: "text", text }] : []), ...images];
+      unique.push({ role: ROLE_USER, content });
+    }
   }
 
   return unique;

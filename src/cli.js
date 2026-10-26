@@ -330,6 +330,14 @@ export async function cmdDoctor() {
     problems.push(`BYOK server not answering as ours on port ${port} -> run 'cursor-byok run'`);
   }
 
+  const vision = settings.describeVision();
+  if (vision.withoutImages > 0) {
+    notes.push(
+      `${vision.withoutImages} of ${vision.total} model(s) are marked supportsImages: false -> ` +
+        "attached images will not be sent to them",
+    );
+  }
+
   const providers = settings.describeProviders();
   if (["missing", "empty", "malformed"].includes(providers)) {
     problems.push(`${providersFile()} has no providers -> add one before sending a message`);

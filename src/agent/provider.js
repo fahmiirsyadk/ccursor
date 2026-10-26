@@ -65,6 +65,7 @@ function toOpenAiMessages(messages) {
 
     const blocks = message.content ?? [];
     const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("");
+    const images = blocks.filter((b) => b.type === "image" && typeof b.data === "string");
     const toolCalls = blocks
       .filter((b) => b.type === "tool_use")
       .map((b) => ({
@@ -77,9 +78,25 @@ function toOpenAiMessages(messages) {
       const entry = { role: "assistant", content: text };
       if (toolCalls.length > 0) entry.tool_calls = toolCalls;
       out.push(entry);
-    } else {
-      out.push({ role: message.role, content: text });
+      continue;
     }
+
+    if (images.length > 0) {
+      // [OI] vision takes a block array with data URLs, not bare base64.
+      out.push({
+        role: message.role,
+        content: [
+          ...(text.length > 0 ? [{ type: "text", text }] : []),
+          ...images.map((image) => ({
+            type: "image_url",
+            image_url: { url: `data:${image.mimeType || "image/png"};base64,${image.data}` },
+          })),
+        ],
+      });
+      continue;
+    }
+
+    out.push({ role: message.role, content: text });
   }
 
   return out;
@@ -213,6 +230,61 @@ export async function* streamOpenAi({ provider, apiModel, messages, tools, signa
   }
 
   yield { type: "done", stopReason, usage };
+}
+
+/** Does this failure look like the provider refusing the image? */
+export function looksLikeImageRejection(error) {
+  const message = String(error?.message ?? error ?? "");
+  return /image|vision|modalit|content[_ ]?type|supplier_request_rejected/i.test(message);
+}
+
+/**
+ * Stream, and retry without images if the provider refuses them.
+ *
+ * A gateway can advertise nothing and still reject an image, so the capability
+ * cannot be known up front. Trying and falling back is the only way to support both
+ * kinds of endpoint without asking the user to configure it.
+ *
+ * The returned generator carries `droppedImages` so the caller can tell the user.
+ *
+ * @param {object} options
+ * @param {Array} options.images image blocks present in the conversation
+ * @param {"send"|"skip"|"try"} [options.policy]
+ */
+export function withImageFallback({ images = [], policy = "try", ...options }) {
+  // stream() is an async generator, so this has to be one too: a sync generator
+  // cannot yield from an async iterable.
+  const attempt = async function* (messages) {
+    yield* stream({ ...options, messages });
+  };
+
+  const generator = (async function* () {
+    const maySend = policy !== "skip" && images.length > 0;
+
+    if (!maySend) {
+      yield* attempt(options.messages);
+      return;
+    }
+
+    try {
+      yield* attempt(options.messages);
+    } catch (error) {
+      if (!looksLikeImageRejection(error)) throw error;
+
+      // Retry once, without the images, so the user keeps their text.
+      const stripped = options.messages.map((message) => {
+        if (!Array.isArray(message.content)) return message;
+        const kept = message.content.filter((block) => block?.type !== "image");
+        const onlyText = kept.every((block) => block.type === "text");
+        return { ...message, content: onlyText ? kept.map((block) => block.text).join("") : kept };
+      });
+
+      generator.droppedImages = true;
+      yield* attempt(stripped);
+    }
+  })();
+
+  return generator;
 }
 
 /** Stream from whichever provider the model belongs to. */

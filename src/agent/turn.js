@@ -10,12 +10,23 @@
  * asking. The loop lives here because the conversation state lives here.
  */
 
-import { conversation, modelId } from "./request.js";
+import { conversation, imagesFrom, modelId } from "./request.js";
+import {
+  annotate,
+  corruptNote,
+  droppedNotice,
+  imagePolicy,
+  partition,
+  stripImages,
+  unseenNote,
+} from "./vision.js";
+import { readAll as ocrText } from "./ocr.js";
+import { withImageFallback } from "./provider.js";
 import { systemPrompt } from "./prompt.js";
 import { resolveModel, stream } from "./provider.js";
 import { EXEC_CASES, TOOL_TYPES, findTool, providerTools, renderResult, toToolResult } from "./tools.js";
 import { execServerMessage, toolCallCompleted, toolCallStarted, waitForExec } from "./exec.js";
-import { detail, info } from "../ui.js";
+import { detail, info, warn } from "../ui.js";
 import {
   heartbeat,
   stepCompleted,
@@ -222,13 +233,13 @@ async function* editViaReadWrite({ root, requestId, allocateExecId, args, callId
  *
  * Yields the frames the UI needs and returns what the model should be told.
  */
-async function* runTool({ root, requestId, allocateExecId, tool, input, callId, modelCallId }) {
+async function* runTool({ root, requestId, allocateExecId, tool, input, callId, modelCallId, context }) {
   const toolType = TOOL_TYPES[tool.name];
   const args = tool.startedArgs ? tool.startedArgs(input, callId) : tool.buildArgs(input, callId);
 
   yield toolCallStarted(root, { callId, toolType, args, modelCallId });
 
-  const execArgs = tool.buildArgs(input, callId);
+  const execArgs = tool.buildArgs(input, callId, context);
   const result =
     tool.name === "Edit"
       ? yield* editViaReadWrite({ root, requestId, allocateExecId, args: execArgs, callId })
@@ -279,10 +290,36 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
 
   const { provider, apiModel } = resolved;
 
-  const messages = [
-    { role: "system", content: systemPrompt(request) },
-    ...conversation(request, queued),
-  ];
+  let turns = conversation(request, queued);
+  const all = imagesFrom(request);
+
+  // A corrupt payload is rejected by the provider with an error that says nothing
+  // useful, and the whole turn goes with it. Catching it here costs one check.
+  const { usable: images, corrupt } = partition(all);
+  if (corrupt.length > 0) {
+    warn(`${corrupt.length} attached image(s) are not valid images; not sent`);
+    turns = stripImages(turns);
+    if (images.length === 0) annotate(turns, corruptNote(corrupt));
+  }
+
+  const policy = imagePolicy(resolved.model, images);
+
+  // Dropping an image silently makes the assistant answer "you attached nothing",
+  // which is both wrong and confusing. The model is told what arrived either way.
+  if (policy === "skip" && images.length > 0) {
+    detail(`${images.length} image(s) cannot be sent to ${resolved.model.id}`);
+
+    // The text inside a screenshot is often the whole point, and it can be read
+    // locally. That turns "I cannot see your image" into a real answer.
+    const ocr = await ocrText(images);
+    if (ocr.length > 0) detail(`OCR read ${ocr.length} image(s)`);
+
+    turns = stripImages(turns);
+    annotate(turns, unseenNote(images, ocr));
+    yield textDelta(root, droppedNotice(images, resolved.model.id, ocr.length));
+  }
+
+  let messages = [{ role: "system", content: systemPrompt(request) }, ...turns];
   const tools = providerTools();
 
   yield heartbeat(root);
@@ -311,7 +348,15 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     const calls = [];
     const pending = new Map();
 
-    const events = stream({ provider, apiModel, messages, tools, signal });
+    const events = withImageFallback({
+      provider,
+      apiModel,
+      messages,
+      tools,
+      signal,
+      images,
+      policy,
+    });
 
     for await (const event of withHeartbeat(events, root)) {
       if (event.type === "heartbeat") {
@@ -381,6 +426,13 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
 
     if (thinkingStarted > 0) yield thinkingCompleted(root, Date.now() - thinkingStarted);
 
+    if (events.droppedImages) {
+      // The provider refused the image mid-flight; the round was retried without it.
+      detail(`provider rejected images; retried without them`);
+      yield textDelta(root, droppedNotice(images, resolved.model.id));
+      messages = annotate(messages, unseenNote(images));
+    }
+
     yield stepCompleted(root, stepId, Date.now() - roundStarted);
 
     if (stopReason !== "tool_use" || calls.length === 0) {
@@ -427,6 +479,7 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
         input: parseArguments(call.arguments),
         callId: call.id,
         modelCallId: `${requestId}-${round}-${call.id.slice(-4)}`,
+        context: { modelId: apiModel, conversationId: request?.conversation_id ?? "" },
       });
 
       messages.push({
