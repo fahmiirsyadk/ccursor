@@ -3,6 +3,9 @@
 A BYOK agent loop is only as good as the tool calls the model produces. Two
 failures are common, and neither is a transport bug.
 
+The loop itself — prompt assembly, tool dispatch, round bookkeeping — is described in
+[architecture.md](architecture.md#the-tool-loop).
+
 ---
 
 ## A file ends up containing another file's contents

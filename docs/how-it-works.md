@@ -6,6 +6,9 @@ a specific order, which is why the errors look unrelated.
 This document is the mechanism reference: for each failure, the symptom a user sees,
 the evidence that identifies it, and the cause. The README keeps only the symptoms.
 
+For the happy path — how a message travels from composer to endpoint and how tool
+calls come back — see [architecture.md](architecture.md).
+
 Findings below come from Cursor 3.27.12 on Linux x86_64.
 
 ---

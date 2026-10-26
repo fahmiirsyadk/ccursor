@@ -37,20 +37,53 @@ configuration
 
 ---
 
-## Symptoms this fixes
+## Is this for you?
 
-If you recognise one of these, this is the tool for that.
+You configured your own key in Cursor and it does not work: the picker falls back
+to Auto, or every agent turn ends in `Server error`. That is what this fixes.
 
-| You see | When |
-|---|---|
-| `Server error` or `[internal] Protocol error` on every agent turn | Always, with a working key |
-| Your model disappears from the picker, only **Auto** left | After the plan refreshes, or on restart |
-| The picker lists Cursor's own models instead of yours | New chats, while the server is healthy |
-| `Model default was not found in providers.json` | Selecting **Auto**, or starting a new composer |
-| Requests hang with nothing responding | After changing the port by hand |
+---
 
-The cause behind each one, with the log lines and code that prove it, is in
-[docs/how-it-works.md](docs/how-it-works.md).
+## How it works
+
+Cursor sends every agent turn to its own backend. This tool installs a router that
+diverts those calls to a local server, which forwards them to your endpoint.
+
+**Startup** — `cursor-byok run`:
+
+```
+1. marker check        bundle mtimes changed? -> Cursor updated -> re-apply
+2. seed catalog        state.vscdb <- your models from providers.json
+3. launch Cursor       renderer already sees your model in the picker
+```
+
+**One agent turn:**
+
+```
+composer
+  -> agent host          https.request("api2.cursor.sh/.../RunSSE")
+  -> router              host + path match routes.json -> rewrite
+  -> 127.0.0.1:39831     resolve model id -> apiModel
+  -> your endpoint       POST /chat/completions (stream)
+  <- SSE deltas          mapped to Cursor frames
+  <- renderer
+```
+
+**Tool calls** are a loop, not one request:
+
+```
+round N   prompt = system + tools + conversation + tool_results
+          model returns stop_reason = tool_use
+          adapter maps the tool name to a Cursor tool, Cursor executes it natively
+          result appended as a tool_results turn
+round N+1 ...                                  until stop_reason = end_turn
+```
+
+The model decides when to stop, which is why an unbounded run can loop.
+[docs/tool-calling.md](docs/tool-calling.md) covers that and the one-file-per-Write
+rule.
+
+Full trace with real log lines: [docs/architecture.md](docs/architecture.md).
 
 ---
 
