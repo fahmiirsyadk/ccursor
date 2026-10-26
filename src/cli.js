@@ -30,6 +30,7 @@ import {
   providersFile,
   routesFile,
   settingsFile,
+  writeJson,
 } from "./paths.js";
 import { detail, fail, heading, info, ok, warn } from "./ui.js";
 
@@ -234,6 +235,11 @@ export async function cmdDoctor() {
   const providers = settings.describeProviders();
   if (["missing", "empty", "malformed"].includes(providers)) {
     problems.push(`${providersFile()} has no providers -> add one before sending a message`);
+  } else if (!settings.hasDefaultAlias()) {
+    problems.push(
+      "providers.json has no \"default\" alias -> selecting Auto fails with " +
+        "\"Model default was not found\". Run 'cursor-byok alias'.",
+    );
   }
 
   if (process.env.CURSOR_API_BASE_URL) {
@@ -336,8 +342,64 @@ export function cmdUpdate(args = {}) {
   });
 }
 
-const RULE = `# Agent rule: one file per Write call
+/**
+ * Add a `default` alias so Cursor's Auto model resolves.
+ *
+ * Cursor sends modelId "default" whenever Auto is selected, and a freshly created
+ * composer starts on Auto. Without an entry with that id the BYOK server rejects
+ * the turn with "Model default was not found in providers.json".
+ *
+ * The alias is an alias, not a pickable model: it points at the primary model via
+ * apiModel, and the catalog builder skips it so the picker does not show a second
+ * Auto.
+ */
+export function cmdAlias(args = {}) {
+  const file = providersFile();
+  const cfg = readJsonOr(file);
+  if (!cfg || !Array.isArray(cfg.providers) || cfg.providers.length === 0) {
+    fail(`${file} has no providers; add one first`);
+    return 1;
+  }
 
+  const provider = cfg.providers[0];
+  const models = Array.isArray(provider.models) ? provider.models : [];
+  const primary = models.find((m) => m.id !== "default");
+  if (!primary) {
+    fail(`${file}: provider "${provider.id}" has no model to alias`);
+    return 1;
+  }
+
+  if (models.some((m) => m.id === "default")) {
+    ok(`alias already present -> ${models.find((m) => m.id === "default").apiModel}`);
+    return 0;
+  }
+
+  const alias = {
+    id: "default",
+    apiModel: primary.apiModel ?? primary.id,
+    displayName: `Auto (→ ${primary.displayName ?? primary.id})`,
+    contextTokenLimit: primary.contextTokenLimit ?? 200000,
+    maxOutputTokens: primary.maxOutputTokens ?? 16384,
+    supportsImages: primary.supportsImages !== false,
+    supportsAgent: true,
+    supportsCmdK: true,
+    thinking: primary.thinking === true,
+    defaultOn: false,
+  };
+
+  if (args.dryRun) {
+    ok(`would add alias: default -> ${alias.apiModel}`);
+    return 0;
+  }
+
+  provider.models = [...models, alias];
+  writeJson(file, cfg);
+  ok(`added alias: default -> ${alias.apiModel}`);
+  detail("hot-reloaded by the extension within ~2s; no restart needed");
+  return 0;
+}
+
+const RULE = `# Agent rule: one file per Write call
 The Write tool replaces a whole file. When several files are written in one turn,
 issue one Write call per file. Never put two files' contents into a single
 \`contents\` field.
@@ -392,6 +454,8 @@ Commands:
     --install-dir <dir> where the patched tree lives
     --drop-old          delete the previous tree after a successful swap
     --rollback          restore the previous tree and exit
+  alias                 map Cursor's Auto model id ("default") to your primary model
+    --dry-run           report what would change without writing
   rule                  print the agent rule that keeps Write calls sane
     --write <path>      append it to a file (e.g. AGENTS.md)
 
@@ -415,7 +479,7 @@ const VALUE_FLAGS = {
   "--write": "write",
 };
 
-const COMMANDS = ["apply", "status", "doctor", "revert", "run", "update", "rule"];
+const COMMANDS = ["apply", "status", "doctor", "revert", "run", "update", "rule", "alias"];
 
 export function parseArgs(argv) {
   const args = { forward: [] };
@@ -504,6 +568,8 @@ export async function main(argv = process.argv.slice(2)) {
       return cmdUpdate(args);
     case "rule":
       return cmdRule(args);
+    case "alias":
+      return cmdAlias(args);
     default:
       fail(`unknown command: ${args.command}`);
       process.stderr.write(USAGE);

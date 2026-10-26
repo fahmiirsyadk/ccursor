@@ -145,6 +145,27 @@ for (const needle of ["subscriptionChangedListener=", "action=disable-openai-key
 
 ---
 
+## "Model default was not found in providers.json"
+
+Cursor selected **Auto**, which it sends as `modelId: "default"`. Your provider file
+has no model with that id, so the request is rejected before it reaches your
+endpoint.
+
+```bash
+cursor-byok alias          # maps "default" to your primary model
+```
+
+The extension hot-reloads the file in about two seconds. If you are already on a
+named model, switching away from Auto also avoids it — but the alias is the durable
+fix, because new composers start on Auto.
+
+Why it can appear even though you picked a named model: the catalog Cursor persisted
+can revert to its own 46-model list if a model fetch lands before the BYOK extension
+is listening. When that happens a new composer defaults to Auto. See failure 5 in
+`docs/how-it-works.md`.
+
+---
+
 ## Picker shows only Auto, but the server is healthy
 
 The startup race. Cursor's first model fetch beats the extension by a few seconds

@@ -112,6 +112,41 @@ machine, so a loopback address works here:
 }
 ```
 
+## Always add the `default` alias
+
+Cursor sends `modelId: "default"` whenever **Auto** is selected, and a freshly
+created composer starts on Auto. If `providers.json` has no model with that id, the
+BYOK server rejects the turn:
+
+```
+Model default was not found in ~/.cursor/providers.json.
+Open the Cursor++ side panel -> Providers, add the model, then try again.
+```
+
+Add the alias with one command:
+
+```bash
+cursor-byok alias
+```
+
+Which appends:
+
+```json
+{
+  "id": "default",
+  "apiModel": "vendor/model-large",
+  "displayName": "Auto (-> Model Large)",
+  "defaultOn": false
+}
+```
+
+`apiModel` points at your primary model, so Auto routes to it. The catalog builder
+skips `default`, so the picker still shows a single Auto entry rather than a
+duplicate.
+
+The extension hot-reloads `providers.json` within about two seconds, so no restart
+is needed.
+
 ## Verifying
 
 Test the endpoint before blaming Cursor:

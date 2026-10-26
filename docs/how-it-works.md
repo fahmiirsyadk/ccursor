@@ -216,6 +216,49 @@ seconds. Verified — writing while Cursor runs leaves the catalog unchanged.
 
 ---
 
+## 6. Auto is rejected outright
+
+**Symptom**
+
+```
+Model default was not found in ~/.cursor/providers.json.
+```
+
+**Cause**
+
+Cursor's model id for Auto is the literal string `default`. A composer that starts
+on Auto, or any turn where Auto is selected, sends `modelId: "default"` to the BYOK
+server. The adapter resolves models by id and throws when the id is absent:
+
+```js
+function xN(id) {
+  const entry = Lfe(id);
+  if (!entry) throw new ModelNotFoundError(id);   // "not found in providers.json"
+  return { apiModel: entry.model.apiModel, ... };
+}
+```
+
+`providers.json` normally lists only real models, so `default` misses.
+
+This becomes visible whenever the persisted catalog reverts to Cursor's own list
+(failure 5), because new composers then default to Auto.
+
+**Fix**
+
+Add an alias entry whose `apiModel` points at a real model:
+
+```json
+{ "id": "default", "apiModel": "vendor/model-large", "defaultOn": false }
+```
+
+`cursor-byok alias` writes it, and the extension hot-reloads within two seconds.
+`seed.js` also pins every composer mode to the primary model, so new composers do
+not start on Auto in the first place.
+
+The catalog builder skips `default`, so the picker keeps a single Auto entry.
+
+---
+
 ## Patch strategy
 
 Both workbench patches are structural rather than exact-string replacements:

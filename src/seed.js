@@ -148,6 +148,18 @@ export function seedCatalog({ dryRun = false, force = false } = {}) {
     ai.modelOverrideEnabled = [...new Set([...enabled, ...ids])];
     ai.modelOverrideDisabled = (ai.modelOverrideDisabled ?? []).filter((id) => !ids.includes(id));
 
+    // Pin every composer mode to the primary model. Without this a newly created
+    // composer inherits "default" (Auto), and Cursor then sends modelId "default"
+    // to the BYOK server, which has no such model unless an alias is configured.
+    const primary = ids[0];
+    const configs = (ai.modelConfig ??= {});
+    for (const mode of Object.keys(configs)) {
+      const entry = configs[mode];
+      if (!entry || typeof entry !== "object") continue;
+      entry.modelName = primary;
+      entry.selectedModels = [{ modelId: primary, parameters: [] }];
+    }
+
     db.prepare("update ItemTable set value = ? where key = ?").run(
       JSON.stringify(state),
       USER_STATE_KEY,

@@ -11,6 +11,14 @@ virtualenv — `node:sqlite` replaces the external driver.
 
 ### Added
 
+- `alias` command, and a `doctor` check for it. Cursor sends `modelId: "default"`
+  for Auto, and a fresh composer starts on Auto, so without an alias every such
+  turn fails with "Model default was not found in providers.json". The alias points
+  at the primary model through `apiModel`, and the catalog builder skips it so the
+  picker keeps a single Auto entry.
+- Seeding now pins every composer mode to the primary model, so new composers no
+  longer start on Auto. The earlier Python version did this; the port had dropped
+  it.
 - **Catalog seeding.** Writes `providers.json` models into Cursor's
   `state.vscdb` before launch, which removes the startup race that made the
   picker fall back to Auto. Refuses to run while Cursor is open, because Cursor

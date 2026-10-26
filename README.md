@@ -46,6 +46,7 @@ configuration
 | 3 | Account policy reports BYOK disabled and resets the toggle | Same as above, silently, on restart |
 | 4 | Port in `routes.json` disagrees with the extension | Requests reach a closed port, nothing responds |
 | 5 | First model fetch beats the extension's startup | Picker shows Cursor's 46-model catalog, your models are gone |
+| 6 | Auto is sent as `modelId: "default"`, which no provider lists | `Model default was not found in providers.json` |
 
 Each is described with evidence in [docs/how-it-works.md](docs/how-it-works.md).
 
@@ -115,8 +116,15 @@ CURSOR_APP_ROOT=/path/to/resources/app cursor-byok apply
 }
 ```
 
-Then in Cursor: **Settings → Models**, enable *Use API Key*, and pick the model.
-Full field reference: [docs/provider-setup.md](docs/provider-setup.md).
+Then add the Auto alias and pick a model:
+
+```bash
+cursor-byok alias
+```
+
+Cursor sends `modelId: "default"` whenever Auto is selected, and new composers start
+on Auto, so without the alias those turns are rejected before reaching your
+endpoint. Full field reference: [docs/provider-setup.md](docs/provider-setup.md).
 
 ## Commands
 
@@ -129,6 +137,7 @@ Full field reference: [docs/provider-setup.md](docs/provider-setup.md).
 | `run` | Seed the catalog, re-apply if needed, then launch Cursor. |
 | `update` | Extract a new AppImage into a staging tree, patch it, verify, swap. |
 | `update --rollback` | Go back to the previous tree. |
+| `alias` | Map Cursor's Auto id (`default`) to your primary model. |
 | `rule` | Print the agent rule that keeps multi-file edits sane. |
 
 ### Point your launcher at `run`
@@ -178,7 +187,7 @@ at `squashfs-root.old` until the next update.
 | `~/.config/Cursor/User/settings.json` | `cursor.general.disableHttp2 = true` |
 | `~/.ccursor/routes.json` | `server.port` synchronised |
 | `product.json` | Checksums refreshed for patched bundles |
-| `~/.config/Cursor/User/globalStorage/state.vscdb` | Model catalog seeded (only in `apply`/`run`) |
+| `~/.config/Cursor/User/globalStorage/state.vscdb` | Model catalog and composer models seeded (only in `apply`/`run`) |
 
 Local state lives in `~/.cursor-byok-patch`:
 

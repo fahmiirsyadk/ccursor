@@ -124,6 +124,9 @@ export function providerCatalog() {
     if (!Array.isArray(provider.models)) continue;
     for (const model of provider.models) {
       if (!model?.id) continue;
+      // "default" is Cursor's id for Auto. It is an alias, not a pickable model:
+      // including it in the catalog would add a second Auto entry.
+      if (model.id === "default") continue;
       catalog.push({
         id: model.id,
         displayName: model.displayName ?? model.id,
@@ -135,6 +138,22 @@ export function providerCatalog() {
     }
   }
   return catalog;
+}
+
+/**
+ * True when providers.json maps Cursor's Auto id ("default") to a real model.
+ *
+ * Cursor sends modelId "default" whenever Auto is selected, and a newly created
+ * composer starts on Auto. Without this alias the BYOK server rejects the request
+ * with "Model default was not found in providers.json".
+ */
+export function hasDefaultAlias() {
+  const data = readJson(providersFile());
+  if (!data || !Array.isArray(data.providers)) return false;
+  return data.providers.some(
+    (provider) =>
+      Array.isArray(provider.models) && provider.models.some((model) => model?.id === "default"),
+  );
 }
 
 /**
