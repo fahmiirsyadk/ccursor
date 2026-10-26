@@ -305,8 +305,12 @@ export async function cmdRun(args = {}) {
   if (server === "started") detail("local server started");
   else if (server === "already-running") detail("local server already running");
   else if (server === "port-taken") {
-    warn("another BYOK server already holds the port — Cursor will use that one");
-    detail("stop it and run again to use this server");
+    // The port is held by a BYOK server that is not ours — almost always the
+    // extension inside a Cursor that is already open. Launching now would start a
+    // second window and the wrong server would keep serving.
+    fail("Cursor is already running, so the port belongs to its extension");
+    detail("quit Cursor, then run this again — the local server must win the port");
+    return 1;
   }
 
   const binary = cursorBinary(appRoot);
