@@ -32,7 +32,7 @@ configuration
   disableHttp2        : true
   routes.json port    : 39831
   providers           : 1 (blink)
-  BYOK server         : up
+  BYOK server         : running on 39831
 ```
 
 ---
@@ -47,15 +47,22 @@ to Auto, or every agent turn ends in `Server error`. That is what this fixes.
 ## How it works
 
 Cursor sends every agent turn to its own backend. This tool installs a router that
-diverts those calls to a local server, which forwards them to your endpoint.
+diverts those calls to a local server, which talks to your endpoint instead. The
+server is part of this repository — it reads Cursor's own protobuf schema from the
+installed app, so it keeps working when Cursor changes shape.
 
 **Startup** — `cursor-byok run`:
 
 ```
 1. marker check        bundle mtimes changed? -> Cursor updated -> re-apply
 2. seed catalog        state.vscdb <- your models from providers.json
-3. launch Cursor       renderer already sees your model in the picker
+3. start the server    it must own the port before Cursor boots
+4. launch Cursor       the extension sees the port taken and steps aside
 ```
+
+Nothing is forwarded to Cursor's backend. Model listing, the agent loop, tool
+execution, usage panels and analytics are all answered locally, so the account
+needs no plan, no seat, and no data leaves the machine.
 
 **One agent turn:**
 
@@ -172,7 +179,9 @@ endpoint. Full field reference: [docs/provider-setup.md](docs/provider-setup.md)
 | `status` | What is currently in effect, including a live server health check. |
 | `doctor` | Explain why something is broken, and print the next step. |
 | `revert` | Restore the bundles Cursor shipped with. |
-| `run` | Seed the catalog, re-apply if needed, then launch Cursor. |
+| `run` | Re-apply if needed, seed the catalog, start the server, launch Cursor. |
+| `serve` | Run the server in the foreground (`--port`, `--app`). |
+| `stop` | Stop the background server started by `run`. |
 | `update` | Extract a new AppImage into a staging tree, patch it, verify, swap. |
 | `update --rollback` | Go back to the previous tree. |
 | `alias` | Map Cursor's Auto id (`default`) to your primary model. |
@@ -185,7 +194,12 @@ endpoint. Full field reference: [docs/provider-setup.md](docs/provider-setup.md)
 1. Re-applies patches if bundle mtimes no longer match the marker (Cursor updated).
 2. Seeds the model catalog into `state.vscdb` **while Cursor is closed**, so the
    first `AvailableModels` render already has your models.
-3. Launches Cursor detached.
+3. Starts the server in the background and waits until it answers.
+4. Launches Cursor detached.
+
+The order matters: the BYOK extension probes `/health` when it boots and steps
+aside when something answers as ours. Starting the server after Cursor loses that
+race and the extension serves instead.
 
 Wire it into your desktop entry once:
 

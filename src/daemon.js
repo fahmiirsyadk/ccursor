@@ -24,7 +24,12 @@ const cliPath = () => path.join(here, "cli.js");
 const pidFile = () => path.join(stateDir(), "server.pid");
 const logFile = () => path.join(stateDir(), "server.log");
 
-/** Ask a running server what it is. */
+/**
+ * Ask a running server what it is.
+ *
+ * `mode: "byok"` is the handshake the extension looks for, so any BYOK server
+ * answers it. `server` tells ours apart from another one already holding the port.
+ */
 export async function health(port = DEFAULT_PORT, timeoutMs = 800) {
   try {
     const controller = new AbortController();
@@ -35,7 +40,8 @@ export async function health(port = DEFAULT_PORT, timeoutMs = 800) {
     clearTimeout(timer);
     if (!response.ok) return "down";
     const body = await response.json();
-    return body?.mode === "byok" ? "byok" : "other";
+    if (body?.mode !== "byok") return "other";
+    return body?.server === "ccursor-byok" ? "byok" : "foreign";
   } catch {
     return "down";
   }
@@ -44,7 +50,9 @@ export async function health(port = DEFAULT_PORT, timeoutMs = 800) {
 /** Wait for the server to answer, or give up. */
 export async function waitForServer(port = DEFAULT_PORT, attempts = 40) {
   for (let i = 0; i < attempts; i += 1) {
-    if ((await health(port)) === "byok") return true;
+    const state = await health(port);
+    if (state === "byok") return true;
+    if (state === "foreign") return false;
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   return false;
@@ -71,7 +79,9 @@ export function runningPid() {
  * @returns {Promise<"already-running"|"started"|"failed">}
  */
 export async function ensureServer({ appRoot, port = DEFAULT_PORT }) {
-  if ((await health(port)) === "byok") return "already-running";
+  const current = await health(port);
+  if (current === "byok") return "already-running";
+  if (current === "foreign") return "port-taken";
 
   fs.mkdirSync(stateDir(), { recursive: true });
   const log = fs.openSync(logFile(), "a");
@@ -114,7 +124,8 @@ export function stopServer() {
 export async function describe(port = DEFAULT_PORT) {
   const state = await health(port);
   if (state === "byok") return `running on ${port}`;
-  if (state === "other") return `port ${port} is answering, but not as this tool`;
+  if (state === "foreign") return `another BYOK server holds port ${port}`;
+  if (state === "other") return `port ${port} is answering, but not as a BYOK server`;
   const pid = runningPid();
   return pid ? `recorded pid ${pid}, not answering` : "not running";
 }

@@ -56,17 +56,6 @@ function requireInstall() {
   return found;
 }
 
-async function health(port = DEFAULT_PORT) {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    return res.ok ? "up" : `http ${res.status}`;
-  } catch {
-    return "down";
-  }
-}
-
 // ------------------------------------------------------------------- commands
 
 export async function cmdApply(args = {}) {
@@ -182,7 +171,7 @@ export async function cmdStatus() {
   const port = routes?.server?.port ?? null;
   console.log(`  routes.json port    : ${port}`);
   console.log(`  providers           : ${settings.describeProviders()}`);
-  console.log(`  BYOK server         : ${await health(port ?? DEFAULT_PORT)}`);
+  console.log(`  BYOK server         : ${await daemon.describe(port ?? DEFAULT_PORT)}`);
   return 0;
 }
 
@@ -232,8 +221,8 @@ export async function cmdDoctor() {
   const port = routes?.server?.port;
   if (!port) {
     problems.push("routes.json missing -> run apply");
-  } else if ((await health(port)) !== "up") {
-    problems.push(`BYOK server not responding on port ${port} -> is Cursor running?`);
+  } else if ((await daemon.health(port)) !== "byok") {
+    problems.push(`BYOK server not answering as ours on port ${port} -> run 'cursor-byok run'`);
   }
 
   const providers = settings.describeProviders();
@@ -315,6 +304,10 @@ export async function cmdRun(args = {}) {
   const server = await daemon.ensureServer({ appRoot });
   if (server === "started") detail("local server started");
   else if (server === "already-running") detail("local server already running");
+  else if (server === "port-taken") {
+    warn("another BYOK server already holds the port — Cursor will use that one");
+    detail("stop it and run again to use this server");
+  }
 
   const binary = cursorBinary(appRoot);
   if (!binary) {

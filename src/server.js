@@ -99,7 +99,7 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
 
     if (req.method === "GET" && pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, mode: "byok" }));
+      res.end(JSON.stringify({ ok: true, mode: "byok", server: "ccursor-byok" }));
       return;
     }
 

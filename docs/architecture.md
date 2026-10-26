@@ -15,7 +15,7 @@ lines are real excerpts.
 │  renderer            agent host              extension host     │
 │  ────────            ──────────              ──────────────     │
 │  composer UI   →     RunSSE / BidiAppend  →  cursor2plus        │
-│  model picker        (HTTP/1.1 transport)    Fastify :39831     │
+│  model picker        (HTTP/1.1 transport)    steps aside :39831 │
 │                                              cursor-always-local│
 └─────────────────────────────────────────────────────────────────┘
                                                     │
@@ -24,9 +24,11 @@ lines are real excerpts.
                                        (openai-chat / anthropic)
 ```
 
-Two things make this work: the **router** inside the extension hosts, and the
-**server** in the `cursor2plus` extension. This tool installs both, then keeps them
-alive across Cursor updates.
+Three things make this work: the **router** inside the extension hosts, the
+**server** this repository runs on `127.0.0.1:39831`, and the **handover** between
+that server and the BYOK extension. The extension probes `/health` on boot; when
+something answers as ours it steps aside, so whichever process wins the port serves
+the traffic. `cursor-byok run` starts the server first for that reason.
 
 ---
 
@@ -263,12 +265,31 @@ makes Cursor send Auto.
 
 ---
 
-## What stays on Cursor's servers
+## What the local server answers
 
-Not everything is diverted. From `routes.json`, the redirect set covers model
-listing, the agent loop, conversation summaries, knowledge base, plan/usage stubs and
-auth. Everything else still goes to Cursor: telemetry, SCM and PR lookups,
-marketplace, feature gates, updater, tab completion, cloud agents.
+`routes.json` decides what is diverted. Everything in that list is answered here —
+nothing is proxied to Cursor:
 
-That is why Tab and Cloud Agents keep working on Cursor's own models — and why they
-are not billed to your key.
+| Group | Answered with |
+|---|---|
+| `AvailableModels` | your catalog from `providers.json` |
+| `RunSSE`, `BidiAppend` | the agent loop, streaming from your endpoint |
+| `UploadConversationBlobs` | a local blob store, so history survives turns |
+| `ServerTime`, `GetDefaultModel` | the real clock, your configured model |
+| `GetPlanInfo`, usage panels | a plan with nothing to pay for and nothing to upgrade |
+| `AnalyticsService/Batch` | accepted and dropped |
+| auth endpoints | a local session |
+| everything else in the schema | a well-formed empty response of the declared type |
+
+The last row is what keeps the IDE quiet. An empty message is something the client
+already knows how to render; an error is a red toast. A service that does not exist
+in Cursor's own schema still returns a Connect `unimplemented` error, so a typo is
+visible rather than silently empty.
+
+## What is not diverted
+
+`routes.json` lists the redirect set. Anything not in it — telemetry from the
+renderer, SCM and PR lookups, the marketplace, feature gates, the updater, tab
+completion, cloud agents — still goes to Cursor, because the router only rewrites
+the calls it was told to rewrite. Those features keep working, and they are not
+billed to your key.
