@@ -34,6 +34,14 @@ function extensionJs() {
   return fs.existsSync(file) ? file : null;
 }
 
+/** Path to the workbench bundle, the primary schema source. */
+function workbenchBundle() {
+  const found = discover();
+  if (!found.appRoot) return null;
+  const file = path.join(found.appRoot, "out/vs/workbench/workbench.desktop.main.js");
+  return fs.existsSync(file) ? file : null;
+}
+
 const bundle = extensionJs();
 const skip = bundle ? false : "no Cursor install with the BYOK extension on this machine";
 
@@ -166,7 +174,7 @@ describe("tool loop", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot(bundle);
+    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
     stub = await startStubProvider([
       toolCallChunks("call-1", "Read", { path: "/tmp/example.txt" }),
       textChunks("The file says hello."),
@@ -331,7 +339,7 @@ describe("edit flow", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot(bundle);
+    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
     stub = await startStubProvider([
       toolCallChunks("edit-1", "Edit", {
         path: "/tmp/edit-me.txt",

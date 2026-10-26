@@ -81,10 +81,11 @@ export function routesPath() {
 /**
  * Write the routes file.
  *
+ * @param {{workbench?: string, extension?: string}} sources where to read the schema
  * @returns {{path: string, services: number, rest: number, changed: boolean}}
  */
-export function writeRoutes(extensionJs) {
-  const root = loadRoot(extensionJs);
+export function writeRoutes(sources) {
+  const root = loadRoot(sources);
   const next = buildRoutes(root);
   const file = routesPath();
   const current = readJson(file);

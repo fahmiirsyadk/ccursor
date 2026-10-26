@@ -234,19 +234,30 @@ mode, and the measurements that rule out the transport as its cause, are in
 
 ## Where the schema comes from
 
-Cursor's protobuf schemas are embedded in its own bundle as base64
-`FileDescriptorProto` blobs. They are read from the installed app at runtime and
-turned into a `protobufjs` root, so encoding and decoding use a maintained library
-and the schema always matches the Cursor version on disk.
+Two sources exist, and they are not equally good:
 
+| Source | What it is |
+|---|---|
+| `out/vs/workbench/workbench.desktop.main.js` | the client's own generated code: 9546 messages, 1024 enums, 88 services, 2791 methods |
+| `extensions/cursor2plus/dist/extension.js` | a separate, older artifact: 1235 of those methods do not exist in it |
+
+So the client wins. Its schema is not protobuf descriptors, though — it is
+protobuf-es generated code:
+
+```js
+X=makeMessageType("agent.v1.AgentRunRequest",()=>[{no:1,name:"conversation_state",kind:"message",T:Qbd}])
+X=makeEnum("agent.v1.AgentMode",[{no:0,name:"AGENT_MODE_UNSPECIFIED"}])
+X={typeName:"agent.v1.AgentService",methods:{runSSE:{name:"RunSSE",I:Vbd,O:Zbd,kind:se.ServerStreaming}}}
 ```
-extensions/cursor2plus/dist/extension.js
-  └─ 10 FileDescriptorProto blobs
-       ├─ agent.v1        1057 top-level messages, 9 services
-       ├─ aiserver.v1     4133 top-level messages, 65 services
-       ├─ anyrun.v1, internapi.v1
-       └─ google.protobuf timestamp, duration, any, struct · google.rpc status
-```
+
+`src/proto/client-schema.js` parses those literals into a protobufjs JSON tree. It
+reads the descriptors rather than evaluating the bundle: running minified
+third-party code to learn a schema is a poor trade, and the shapes are regular
+enough to scan.
+
+`apply` does this once and writes the result to `~/.cursor-byok-patch/schema/`, so
+the server starts in milliseconds and does not need the extension at all. When the
+workbench bundle is newer than the cache, the bundle wins.
 
 `node tools/extract-schema.js --message AgentRunRequest` prints any message.
 

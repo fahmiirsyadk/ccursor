@@ -23,6 +23,14 @@ function extensionJs() {
   return fs.existsSync(file) ? file : null;
 }
 
+/** Path to the workbench bundle, the primary schema source. */
+function workbenchBundle() {
+  const found = discover();
+  if (!found.appRoot) return null;
+  const file = path.join(found.appRoot, "out/vs/workbench/workbench.desktop.main.js");
+  return fs.existsSync(file) ? file : null;
+}
+
 const bundle = extensionJs();
 const skip = bundle ? false : "no Cursor install with the BYOK extension on this machine";
 
@@ -46,7 +54,7 @@ describe("descriptor discovery", { skip }, () => {
 describe("schema root", { skip }, () => {
   it("resolves the messages we depend on", () => {
     clearCache();
-    const root = loadRoot(bundle);
+    const root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
 
     for (const name of [
       "aiserver.v1.AvailableModelsResponse",
@@ -62,7 +70,7 @@ describe("schema root", { skip }, () => {
 
   it("caches per bundle path", () => {
     clearCache();
-    assert.equal(loadRoot(bundle), loadRoot(bundle));
+    assert.equal(loadRoot({ workbench: workbenchBundle(), extension: bundle }), loadRoot({ workbench: workbenchBundle(), extension: bundle }));
   });
 });
 
@@ -85,7 +93,7 @@ describe("catalog", () => {
 
 describe("AvailableModels encoding", { skip }, () => {
   it("round-trips through the real schema", () => {
-    const root = loadRoot(bundle);
+    const root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
     const catalog = [
       {
         id: "vendor/test-model",
@@ -110,7 +118,7 @@ describe("AvailableModels encoding", { skip }, () => {
   });
 
   it("pins every per-mode config to the primary model", () => {
-    const root = loadRoot(bundle);
+    const root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
     const buf = buildAvailableModels(root, [{ id: "vendor/only", displayName: "Only" }]);
     const decoded = root.lookupType("aiserver.v1.AvailableModelsResponse").decode(buf);
 
@@ -128,10 +136,66 @@ describe("AvailableModels encoding", { skip }, () => {
   });
 
   it("omits the default alias from the response", () => {
-    const root = loadRoot(bundle);
+    const root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
     const buf = buildAvailableModels(root, [{ id: "vendor/m" }, { id: "default" }]);
     const decoded = root.lookupType("aiserver.v1.AvailableModelsResponse").decode(buf);
 
     assert.deepEqual(decoded.model_names, ["vendor/m"]);
+  });
+});
+
+describe("client schema", { skip }, () => {
+  it("reads the schema Cursor's own client is generated from", async () => {
+    const { readClientSchema } = await import("../src/proto/client-schema.js");
+    const { stats } = readClientSchema(workbenchBundle());
+
+    assert.ok(stats.messages > 8000, `messages: ${stats.messages}`);
+    assert.ok(stats.services > 50, `services: ${stats.services}`);
+    assert.ok(stats.methods > 1000, `methods: ${stats.methods}`);
+    assert.equal(stats.droppedFields, 0, "no field was silently dropped");
+    assert.deepEqual(stats.unresolved, {}, "every type reference resolved");
+  });
+
+  it("is newer than the extension's copy", async () => {
+    const protobuf = (await import("protobufjs")).default;
+    const { readClientSchema } = await import("../src/proto/client-schema.js");
+
+    const { rootFromExtension } = await import("../src/proto/schema.js");
+    const client = protobuf.Root.fromJSON(readClientSchema(workbenchBundle()).json);
+    const extension = rootFromExtension(bundle);
+
+    // A method the client calls that the extension has never heard of is the whole
+    // reason the client is preferred.
+    const clientMethods = new Set();
+    const walk = (ns, prefix) => {
+      for (const nested of ns.nestedArray ?? []) {
+        const name = prefix ? `${prefix}.${nested.name}` : nested.name;
+        if (nested.methods) for (const method of Object.keys(nested.methods)) clientMethods.add(`${name}/${method}`);
+        walk(nested, name);
+      }
+    };
+    walk(client, "");
+
+    let onlyInClient = 0;
+    for (const route of clientMethods) {
+      const [service, method] = route.split("/");
+      let type = null;
+      try {
+        type = extension.lookup(service);
+      } catch {
+        type = null;
+      }
+      if (!type?.methods?.[method]) onlyInClient += 1;
+    }
+
+    assert.ok(onlyInClient > 0, `client knows ${onlyInClient} methods the extension does not`);
+  });
+
+  it("resolves every message it declares", async () => {
+    const protobuf = (await import("protobufjs")).default;
+    const { readClientSchema } = await import("../src/proto/client-schema.js");
+
+    const root = protobuf.Root.fromJSON(readClientSchema(workbenchBundle()).json);
+    assert.doesNotThrow(() => root.resolveAll());
   });
 });

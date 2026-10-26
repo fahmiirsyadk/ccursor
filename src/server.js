@@ -48,7 +48,7 @@ const INTERNAL = 13;
 const AGENT_SERVICE = "agent.v1.AgentService";
 const BIDI_SERVICE = "aiserver.v1.BidiService";
 
-export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0.1" } = {}) {
+export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host = "127.0.0.1" } = {}) {
   let root = null;
   let methods = null;
   /** Routes the client asked for that the cached schema does not know. */
@@ -69,7 +69,7 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
   };
 
   function getRoot() {
-    if (!root) root = loadRoot(extensionJs);
+    if (!root) root = loadRoot({ workbench, extension: extensionJs });
     return root;
   }
 
@@ -472,12 +472,13 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
   };
 }
 
-/** Start from the CLI, with the extension path resolved from the install. */
+/** Start from the CLI, with both schema sources resolved from the install. */
 export async function start({ appRoot, port = DEFAULT_PORT } = {}) {
+  const workbench = `${appRoot}/out/vs/workbench/workbench.desktop.main.js`;
   const extensionJs = `${appRoot}/extensions/cursor2plus/dist/extension.js`;
-  info(`schema source: ${extensionJs}`);
+  info(`schema: ${workbench}`);
   detail(`port ${port}`);
-  const instance = createServer({ extensionJs, port });
+  const instance = createServer({ workbench, extensionJs, port });
   await instance.listen();
   return instance;
 }

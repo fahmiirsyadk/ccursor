@@ -66,15 +66,15 @@ export function ensureSettings() {
  * owned by the third-party installer; we own it now, which is what makes the
  * router independent of them.
  *
- * @param {string} extensionJs path to the BYOK extension bundle (the schema source)
+ * @param {{workbench?: string, extension?: string}} sources where to read the schema
  */
-export function ensureRoutes(extensionJs) {
-  if (!extensionJs) {
+export function ensureRoutes(sources) {
+  if (!sources?.workbench && !sources?.extension) {
     warn("routes.json not written: no schema source");
     return "skipped";
   }
 
-  const result = routes.writeRoutes(extensionJs);
+  const result = routes.writeRoutes(sources);
 
   if (result.changed) {
     ok(`routes.json: ${result.services} services, ${result.rest} REST paths, ${result.sinks} sinks`);

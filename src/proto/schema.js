@@ -17,6 +17,7 @@ import "protobufjs/ext/descriptor.js";
 
 import { readDescriptors } from "./descriptor.js";
 import * as schemaCache from "./cache.js";
+import { readClientSchema } from "./client-schema.js";
 
 const cache = new Map();
 
@@ -56,41 +57,105 @@ function toDescriptorSet(buffers) {
 }
 
 /**
- * Build one Root containing every schema Cursor's bundle carries.
+ * Build a Root from the cached schema, falling back to the files it came from.
  *
- * The descriptors are read from the local copy when there is one, and from the
- * bundle otherwise. That keeps the server working when the BYOK extension is not
- * installed or not running, which is the case once `apply` has cached the schema.
+ * The client's schema is preferred: it is generated from the protocol Cursor speaks
+ * today, while the extension's copy is a separate and older artifact. See
+ * proto/cache.js.
  *
- * @param {string} extensionJs path to the BYOK extension bundle
+ * @param {object} [sources]
+ * @param {string} [sources.workbench] path to workbench.desktop.main.js
+ * @param {string} [sources.extension] path to the BYOK extension bundle
  * @returns {import("protobufjs").Root}
  */
-export function loadRoot(extensionJs) {
-  if (cache.has(extensionJs)) return cache.get(extensionJs);
+export function loadRoot({ workbench, extension } = {}) {
+  const key = `${workbench ?? ""}|${extension ?? ""}`;
+  if (cache.has(key)) return cache.get(key);
 
-  let raws = extensionJs ? schemaCache.load() : null;
-
-  // Prefer the bundle when it is newer than the copy: a Cursor update may have
-  // changed the protocol, and the cache would then be wrong in a subtle way.
-  if (extensionJs && fs.existsSync(extensionJs) && !schemaCache.isFreshFor(extensionJs)) {
-    const descriptors = readDescriptors(extensionJs);
-    if (descriptors.length === 0) throw new Error("no protobuf descriptors found in the extension bundle");
-    raws = descriptors.map((d) => d.raw);
-  }
-
-  if (!raws || raws.length === 0) {
-    throw new Error(
-      "no protobuf schema available: run 'cursor-byok apply' to cache it from the installed app",
-    );
-  }
-
-  const root = protobuf.Root.fromDescriptor(
-    toDescriptorSet([...raws, emptyDescriptor()]),
-    { keepCase: true },
-  );
-
-  cache.set(extensionJs, root);
+  const root = build({ workbench, extension });
+  cache.set(key, root);
   return root;
+}
+
+function build({ workbench, extension }) {
+  // 1. The cache, when it still matches what it was built from.
+  const cached = schemaCache.load();
+  if (cached) {
+    const fresh =
+      (cached.kind === "client" && (!workbench || schemaCache.isFreshFor(workbench))) ||
+      (cached.kind === "extension" && (!extension || schemaCache.isFreshFor(extension)));
+
+    if (fresh) {
+      if (cached.kind === "client") {
+        const root = protobuf.Root.fromJSON(cached.json);
+        addEmptyIfMissing(root);
+        return root;
+      }
+      return fromDescriptors([...cached.raws, emptyDescriptor()]);
+    }
+  }
+
+  // 2. The client bundle, which is the best source when it is readable.
+  if (workbench && fs.existsSync(workbench)) {
+    const { json } = readClientSchema(workbench);
+    const root = protobuf.Root.fromJSON(json);
+    addEmptyIfMissing(root);
+    return root;
+  }
+
+  // 3. The extension's descriptors, for an install where the workbench bundle is
+  //    unreadable but the extension is present.
+  if (extension && fs.existsSync(extension)) {
+    const descriptors = readDescriptors(extension);
+    if (descriptors.length > 0) {
+      return fromDescriptors([...descriptors.map((d) => d.raw), emptyDescriptor()]);
+    }
+  }
+
+  throw new Error(
+    "no protobuf schema available: run 'cursor-byok apply' to cache it from the installed app",
+  );
+}
+
+function fromDescriptors(raws) {
+  return protobuf.Root.fromDescriptor(toDescriptorSet(raws), { keepCase: true });
+}
+
+/**
+ * `google.protobuf.Empty` is used by a few messages but is not among the generated
+ * types in either bundle. Declared here: no fields.
+ */
+function addEmptyIfMissing(root) {
+  try {
+    root.lookupType("google.protobuf.Empty");
+    return;
+  } catch {
+    /* not present, add it */
+  }
+  try {
+    root.addJSON({
+      nested: { google: { nested: { protobuf: { nested: { Empty: { fields: {} } } } } } },
+    });
+    root.resolveAll();
+  } catch {
+    /* a schema that already resolves does not need this */
+  }
+}
+
+/**
+ * A Root built strictly from the BYOK extension's descriptors.
+ *
+ * Not used for serving — the client schema is better — but `doctor` compares the two
+ * to report drift, and a test needs to see the extension's view without the cache
+ * answering instead.
+ *
+ * @param {string} extensionJs path to the extension bundle
+ * @returns {import("protobufjs").Root}
+ */
+export function rootFromExtension(extensionJs) {
+  const descriptors = readDescriptors(extensionJs);
+  if (descriptors.length === 0) throw new Error("no protobuf descriptors found in the extension bundle");
+  return fromDescriptors([...descriptors.map((d) => d.raw), emptyDescriptor()]);
 }
 
 /** Look up a message type, with a clear error when the schema changed. */

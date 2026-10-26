@@ -132,21 +132,40 @@ export async function cmdApply(args = {}) {
 
   settings.ensureSettings();
 
-  // Cache the schema first: routes and the server both depend on it, and it is the
-  // one thing that still comes from the extension bundle.
+  // Cache the schema first: routes and the server both depend on it. Cursor's own
+  // client is the better source, so it is tried first and the extension is only a
+  // fallback for an install where the workbench bundle cannot be read.
+  const workbench = path.join(appRoot, "out/vs/workbench/workbench.desktop.main.js");
   const extensionJs = ccursor.schemaSource(appRoot);
-  if (extensionJs) {
+  let cached = false;
+
+  if (fs.existsSync(workbench)) {
     try {
-      const cached = schemaCache.save(extensionJs);
-      ok(`schema: ${cached.count} descriptors ${cached.reused ? "already cached" : "cached"}`);
+      const result = schemaCache.saveFromClient(workbench);
+      ok(
+        `schema: ${result.messages} messages, ${result.methods} methods from Cursor's client` +
+          (result.reused ? " (already cached)" : ""),
+      );
+      cached = true;
+    } catch (error) {
+      warn(`client schema not readable: ${error.message}`);
+    }
+  }
+
+  if (!cached && extensionJs) {
+    try {
+      const result = schemaCache.saveFromExtension(extensionJs);
+      warn("using the BYOK extension's schema, which may be older than Cursor's client");
+      ok(`schema: ${result.messages} descriptors${result.reused ? " (already cached)" : ""}`);
+      cached = true;
     } catch (error) {
       warn(`schema not cached: ${error.message}`);
     }
-  } else {
-    warn("BYOK extension not installed; using the cached schema");
   }
 
-  settings.ensureRoutes(extensionJs);
+  if (!cached) warn("no schema cached; run apply again after installing Cursor");
+
+  settings.ensureRoutes({ workbench, extension: extensionJs });
 
   // Replace whatever router is in the extension hosts with ours.
   const injected = inject.injectAll(appRoot, routes.routesPath());
@@ -215,13 +234,19 @@ export async function cmdStatus() {
         ? "table not found"
         : verification.disabled
           ? "NOT VERIFIED (broad bypass)"
-          : `${verification.verified} verified, ${verification.exempt.length} exempt`
+          : `${verification.verified} verified, ${verification.exempt.length} ours unverified`
     }`,
   );
 
   const schema = schemaCache.describe();
   console.log(
-    `  schema cache        : ${schema.present ? `${schema.count} descriptors` : "MISSING"}`,
+    `  schema cache        : ${
+      !schema.present
+        ? "MISSING"
+        : schema.source === "client"
+          ? `${schema.stats?.messages} messages from Cursor's client`
+          : `${schema.stats?.messages} descriptors from the extension (older)`
+    }`,
   );
 
   heading("configuration");
@@ -289,6 +314,10 @@ export async function cmdDoctor() {
   const schema = schemaCache.describe();
   if (!schema.present) {
     problems.push("protobuf schema not cached -> run apply");
+  } else if (schema.source !== "client") {
+    problems.push(
+      "schema came from the BYOK extension, which is older than Cursor's client -> run apply",
+    );
   }
 
   const routes = readJsonOr(routesFile());
