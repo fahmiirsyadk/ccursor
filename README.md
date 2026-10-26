@@ -3,14 +3,14 @@
 Use your own API key with Cursor's chat and agent, and keep it working when Cursor
 updates.
 
-Cursor has a built-in bring-your-own-key (BYOK) mode: you point it at an
-OpenAI-compatible endpoint and pay that provider instead of Cursor. In practice the
-mode keeps switching itself off, the model picker falls back to Auto, and agent turns
-end in `Server error`. This tool fixes those failures and puts a small local server
-between Cursor and your endpoint, so every agent turn reaches your model.
+Cursor has a built-in bring-your-own-key (BYOK) mode: you paste your own API key and
+your provider bills you for the tokens, not Cursor. In practice the setting keeps
+switching itself off, the model picker falls back to Auto, and agent turns end in
+`Server error`. This tool fixes those failures and puts a small local server in the
+path, so every agent turn reaches the provider you configure.
 
-It does **not** unlock Cursor's paid models. You still bring your own key and pay
-your own provider.
+It does **not** unlock Cursor's paid models. You still need your own key and a
+provider account.
 
 ```
 $ cursor-byok status
