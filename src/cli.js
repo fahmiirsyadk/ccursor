@@ -347,13 +347,19 @@ file ends up containing JSON, and no error is reported because the bytes were
 written verbatim.
 `;
 
+/**
+ * Presence check uses a phrase from the rule body, not the heading: a project may
+ * restate the rule under its own heading, and that still counts as present.
+ */
+const RULE_SENTINEL = "Never put two files' contents into a single";
+
 export function cmdRule(args = {}) {
   if (args.write) {
     const target = path.resolve(args.write);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
-    if (existing.includes("one file per Write call")) {
-      ok(`${target} already has the rule`);
+    if (existing.includes(RULE_SENTINEL)) {
+      ok(`${target} already covers the one-file-per-Write rule`);
       return 0;
     }
     const separator = existing && !existing.endsWith("\n\n") ? "\n\n" : "";

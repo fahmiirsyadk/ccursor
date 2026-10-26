@@ -22,6 +22,12 @@ virtualenv — `node:sqlite` replaces the external driver.
 - `doctor` now checks the seeded catalog path and reports a running-Cursor
   conflict.
 
+### Fixed
+
+- `rule --write` keyed its presence check on the rule's heading, so a project that
+  restated the guidance under its own heading got a duplicate appended. The check
+  now uses a phrase from the rule body, and the append is verified idempotent.
+
 ### Changed
 
 - Patch anchors now bound the span they rewrite, so a wide backward search cannot
