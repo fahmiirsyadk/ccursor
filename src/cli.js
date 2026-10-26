@@ -409,31 +409,63 @@ const FLAGS = {
   "--rollback": "rollback",
 };
 
+const VALUE_FLAGS = {
+  "--appimage": "appimage",
+  "--install-dir": "installDir",
+  "--write": "write",
+};
+
+const COMMANDS = ["apply", "status", "doctor", "revert", "run", "update", "rule"];
+
 export function parseArgs(argv) {
   const args = { forward: [] };
-  const positional = [];
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i];
+  // Locate the subcommand first. Anything before it is a global flag; anything
+  // after it belongs to that subcommand.
+  const commandAt = argv.findIndex((token) => COMMANDS.includes(token));
+  if (commandAt === -1) {
+    for (const token of argv) {
+      if (token === "--version" || token === "-v") args.version = true;
+      else if (token === "--help" || token === "-h") args.help = true;
+      else if (token.startsWith("-")) throw new Error(`unrecognized arguments: ${token}`);
+      else throw new Error(`unknown command: ${token}`);
+    }
+    return args;
+  }
+
+  args.command = argv[commandAt];
+  const leading = argv.slice(0, commandAt);
+  const trailing = argv.slice(commandAt + 1);
+
+  for (const token of leading) {
+    if (token === "--version" || token === "-v") args.version = true;
+    else if (token === "--help" || token === "-h") args.help = true;
+    else throw new Error(`unrecognized arguments: ${token}`);
+  }
+
+  // `run` takes no options of its own: everything after it is Cursor's, and
+  // Cursor's flag set is not ours to enumerate.
+  if (args.command === "run") {
+    args.forward = trailing;
+    return args;
+  }
+
+  for (let i = 0; i < trailing.length; i += 1) {
+    const token = trailing[i];
     if (token in FLAGS) {
       args[FLAGS[token]] = true;
-    } else if (token === "--appimage" || token === "--install-dir" || token === "--write") {
-      const value = argv[++i];
+    } else if (token in VALUE_FLAGS) {
+      const value = trailing[++i];
       if (value === undefined) throw new Error(`${token} needs a value`);
-      args[token === "--appimage" ? "appimage" : token === "--install-dir" ? "installDir" : "write"] = value;
+      args[VALUE_FLAGS[token]] = value;
     } else if (token === "--version" || token === "-v") {
       args.version = true;
     } else if (token === "--help" || token === "-h") {
       args.help = true;
     } else {
-      positional.push(token);
+      throw new Error(`unrecognized arguments: ${token}`);
     }
   }
-
-  args.command = positional.shift();
-  // Anything left after `run` belongs to Cursor itself.
-  if (args.command === "run") args.forward = positional;
-  else if (positional.length) throw new Error(`unrecognized arguments: ${positional.join(" ")}`);
 
   return args;
 }

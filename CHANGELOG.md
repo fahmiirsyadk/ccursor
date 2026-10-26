@@ -24,6 +24,10 @@ virtualenv — `node:sqlite` replaces the external driver.
 
 ### Fixed
 
+- `run` consumed flags meant for Cursor: `cursor-byok run --appimage x` swallowed
+  the argument instead of forwarding it. `run` now takes no options of its own and
+  passes every trailing token to the launcher, since Cursor's flag set is not ours
+  to enumerate.
 - `rule --write` keyed its presence check on the rule's heading, so a project that
   restated the guidance under its own heading got a duplicate appended. The check
   now uses a phrase from the rule body, and the append is verified idempotent.
