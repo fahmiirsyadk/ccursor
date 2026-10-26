@@ -3,9 +3,9 @@
 Keep **bring-your-own-key** working in the Cursor IDE across updates.
 
 Cursor lets you point its chat and agent at your own [OI]-compatible endpoint.
-In practice that setup breaks in five separate places, and each one fails with a
-different, unhelpful error. This tool fixes all five, verifies the result, and
-re-applies itself when Cursor updates and wipes the patches.
+In practice that setup breaks in six separate places, each failing with a different,
+unhelpful error. This tool fixes all six, verifies the result, and re-applies itself
+when Cursor updates and wipes the patches.
 
 It does **not** unlock Cursor's paid models. You still bring your own API key and
 pay your own provider.
@@ -37,18 +37,20 @@ configuration
 
 ---
 
-## The five failures
+## Symptoms this fixes
 
-| # | Failure | Symptom |
-|---|---|---|
-| 1 | Transport uses HTTP/2, router only hooks `http.request` | `Protocol error`, `Server error` on every agent turn |
-| 2 | Plan refresh reads as `free` and turns the BYOK toggle off | Model disappears from the picker, only Auto left |
-| 3 | Account policy reports BYOK disabled and resets the toggle | Same as above, silently, on restart |
-| 4 | Port in `routes.json` disagrees with the extension | Requests reach a closed port, nothing responds |
-| 5 | First model fetch beats the extension's startup | Picker shows Cursor's 46-model catalog, your models are gone |
-| 6 | Auto is sent as `modelId: "default"`, which no provider lists | `Model default was not found in providers.json` |
+If you recognise one of these, this is the tool for that.
 
-Each is described with evidence in [docs/how-it-works.md](docs/how-it-works.md).
+| You see | When |
+|---|---|
+| `Server error` or `[internal] Protocol error` on every agent turn | Always, with a working key |
+| Your model disappears from the picker, only **Auto** left | After the plan refreshes, or on restart |
+| The picker lists Cursor's own models instead of yours | New chats, while the server is healthy |
+| `Model default was not found in providers.json` | Selecting **Auto**, or starting a new composer |
+| Requests hang with nothing responding | After changing the port by hand |
+
+The cause behind each one, with the log lines and code that prove it, is in
+[docs/how-it-works.md](docs/how-it-works.md).
 
 ---
 

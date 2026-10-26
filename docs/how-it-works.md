@@ -1,7 +1,10 @@
 # How it works
 
-Five independent mechanisms break a bring-your-own-key setup in Cursor. They fail
-in a specific order, which is why the errors look unrelated.
+Six independent mechanisms break a bring-your-own-key setup in Cursor. They fail in
+a specific order, which is why the errors look unrelated.
+
+This document is the mechanism reference: for each failure, the symptom a user sees,
+the evidence that identifies it, and the cause. The README keeps only the symptoms.
 
 Findings below come from Cursor 3.27.12 on Linux x86_64.
 
