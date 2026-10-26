@@ -414,8 +414,21 @@ describe("agent turn", { skip }, () => {
     assert.deepEqual(readBlobJson(blob.id), { role: "user", content: "uploaded" });
   });
 
-  it("still reports unknown RPCs as unimplemented", async () => {
+  it("answers known RPCs it does not implement with an empty response", async () => {
+    // NameAgent exists in Cursor's schema, so it gets a valid empty message
+    // rather than an error: the client should not see a failure for a call we
+    // simply have nothing to say about.
     const response = await fetch(`${base}/agent.v1.AgentService/NameAgent`, {
+      method: "POST",
+      body: "",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/proto");
+  });
+
+  it("reports a service that does not exist as unimplemented", async () => {
+    const response = await fetch(`${base}/agent.v1.NoSuchService/Nope`, {
       method: "POST",
       body: "",
     });

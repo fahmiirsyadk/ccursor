@@ -4,18 +4,15 @@
  * Speaks the Connect protocol that Cursor's extension host already uses, so the
  * router can point a Cursor API call here without any client-side change.
  *
- * Implemented:
+ * Three kinds of route:
  *
- *   POST /aiserver.v1.AiService/AvailableModels      model list for the picker
- *   POST /aiserver.v1.BidiService/BidiAppend         the run request
- *   POST /agent.v1.AgentService/RunSSE               streamed answer
- *   POST /agent.v1.AgentService/UploadConversationBlobs  history blobs
- *   GET  /health                                     liveness
- *   GET  /byok/debug                                 connection diagnostics
+ *   1. Implemented here      model listing, the agent loop, blob upload
+ *   2. Answered locally      clock, default model, plan, usage, analytics
+ *   3. Unknown               an empty response of the right type, or a clear
+ *                            Connect error when the service does not exist
  *
- * Everything else returns a Connect `unimplemented` error, which Cursor surfaces as
- * a normal RPC failure rather than a transport error — so a missing RPC is visible
- * instead of silently hanging.
+ * Nothing is forwarded to Cursor. That is the point: the account this runs under
+ * needs no plan, no seat, and no data leaving the machine.
  */
 
 import http from "node:http";
@@ -28,9 +25,9 @@ import { detail, fail, info, ok } from "./ui.js";
 import { putBlob } from "./agent/blobs.js";
 import { closeSession, deliver, next, openSession, sessionCount, sweep } from "./agent/session.js";
 import { runTurn } from "./agent/turn.js";
+import { HANDLERS, REST } from "./local/api.js";
 
 const UNAVAILABLE = 12; // Connect code for unimplemented
-const INVALID_ARGUMENT = 3;
 const INTERNAL = 13;
 
 const AGENT_SERVICE = "agent.v1.AgentService";
@@ -38,12 +35,16 @@ const BIDI_SERVICE = "aiserver.v1.BidiService";
 
 export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0.1" } = {}) {
   let root = null;
+  let methods = null;
+
   const stats = {
     requests: 0,
     availableModels: 0,
     bidiAppend: 0,
     runSSE: 0,
     blobs: 0,
+    local: 0,
+    empty: 0,
     errors: 0,
     startedAt: Date.now(),
   };
@@ -53,17 +54,41 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     return root;
   }
 
-  function lookup(name) {
-    return getRoot().lookupType(name);
+  /** service/method -> protobufjs Method, for response types and streaming flags. */
+  function getMethods() {
+    if (methods) return methods;
+    methods = new Map();
+    const schema = getRoot();
+
+    const walk = (namespace) => {
+      for (const nested of namespace.nestedArray ?? []) {
+        if (nested.methods) {
+          const service = nested.fullName.replace(/^\./, "");
+          for (const [name, method] of Object.entries(nested.methods)) {
+            methods.set(`${service}/${name}`, method);
+          }
+          continue;
+        }
+        walk(nested);
+      }
+    };
+    walk(schema);
+
+    return methods;
   }
 
   function decode(name, body) {
-    return lookup(name).decode(body);
+    return getRoot().lookupType(name).decode(body);
   }
 
   function encode(name, value) {
-    const Type = lookup(name);
+    const Type = getRoot().lookupType(name);
     return Buffer.from(Type.encode(Type.fromObject(value ?? {})).finish());
+  }
+
+  function encodeEmpty(method) {
+    const name = String(method.responseType).replace(/^\./, "");
+    return encode(name, {});
   }
 
   const server = http.createServer((req, res) => {
@@ -87,6 +112,15 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
           ...stats,
         }),
       );
+      return;
+    }
+
+    const rest = REST[pathname];
+    if (rest) {
+      stats.local += 1;
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(rest()));
       return;
     }
 
@@ -135,10 +169,39 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
       return;
     }
 
-    stats.errors += 1;
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(errorBody(UNAVAILABLE, `${route} not implemented`));
+    const method = getMethods().get(route);
+    if (!method) {
+      stats.errors += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(errorBody(UNAVAILABLE, `${route} not implemented`));
+      return;
+    }
+
+    if (method.responseStream) {
+      streamEmpty(req, res);
+      return;
+    }
+
+    const handler = HANDLERS[route];
+    unary(req, res, (body) => {
+      if (handler) {
+        stats.local += 1;
+        return encode(String(method.responseType).replace(/^\./, ""), handler(safeDecode(method, body)));
+      }
+      stats.empty += 1;
+      return encodeEmpty(method);
+    });
   });
+
+  /** Decode the request, tolerating an empty or truncated body. */
+  function safeDecode(method, body) {
+    if (!body || body.length === 0) return {};
+    try {
+      return decode(String(method.requestType).replace(/^\./, ""), body);
+    } catch {
+      return {};
+    }
+  }
 
   /** Collect a unary request body, then answer with a protobuf message. */
   function unary(req, res, handler) {
@@ -159,6 +222,14 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
         res.end(errorBody(INTERNAL, error.message));
       }
     });
+  }
+
+  /** A stream with nothing in it, for RPCs we answer but do not stream. */
+  function streamEmpty(req, res) {
+    stats.empty += 1;
+    req.resume();
+    res.writeHead(200, { "content-type": "application/connect+proto" });
+    res.end(endFrame({}));
   }
 
   /** One client frame: decode it, hand it to the session waiting for it. */
@@ -205,7 +276,6 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
 
         res.writeHead(200, {
           "content-type": "application/connect+proto",
-          "connect-content-encoding": "identity",
           "cache-control": "no-store",
         });
 
@@ -301,4 +371,4 @@ export async function start({ appRoot, port = DEFAULT_PORT } = {}) {
   return instance;
 }
 
-export { INVALID_ARGUMENT, openSession };
+export { openSession };
