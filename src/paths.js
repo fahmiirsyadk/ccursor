@@ -62,8 +62,23 @@ export const defaultAppImage = () =>
 export const USER_STATE_KEY =
   "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
 
-/** The BYOK toggle key. Bracketed by design; assembled to avoid editor mangling. */
-export const USE_KEY_FIELD = "use" + "[OI]" + "Key";
+/**
+ * The BYOK toggle field in Cursor's persisted user state.
+ *
+ * Assembled from parts on purpose: the field name contains a vendor token that some
+ * tooling rewrites in logs and transcripts. Building it at runtime keeps the source
+ * unambiguous and the value exact.
+ *
+ * Verified against state.vscdb: 12 bytes, "use" + "Open" + "AI" + "Key".
+ * A literal "[" + "OI" + "]" here would produce a DIFFERENT, bogus field.
+ */
+export const USE_KEY_FIELD = "use" + "Open" + "AI" + "Key";
+
+/**
+ * A bogus field earlier versions of this tool wrote by mistaking the display
+ * rendering for the real name. Removed during seeding so the state stays clean.
+ */
+export const BOGUS_KEY_FIELD = "use" + "[" + "OI" + "]" + "Key";
 
 /** Read JSON, returning null when the file is missing or malformed. */
 export function readJson(file) {

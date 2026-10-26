@@ -38,6 +38,11 @@ always better.
 rewrites the row within seconds, so a live seed is silently lost. `seed.js` checks
 this; do not add a bypass that skips the check.
 
+**Do not hardcode names you read from logs.** Cursor's toggle field contains a vendor
+token that tooling rewrites in transcripts, so a literal copy can be a different
+string than the one on disk. Build such names from parts and pin the bytes in a test
+(`tests/toggle.test.js`).
+
 **Run `npm test` before committing.** The fixtures reproduce the real shape of
 Cursor's minified output. If a change makes them fail, the change is wrong or the
 fixtures need to describe a new Cursor shape — decide which, deliberately.

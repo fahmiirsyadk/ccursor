@@ -26,7 +26,9 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 import {
+  BOGUS_KEY_FIELD,
   USER_STATE_KEY,
+  USE_KEY_FIELD,
   catalogCache,
   readJson,
   stateDbFile,
@@ -138,6 +140,14 @@ export function seedCatalog({ dryRun = false, force = false } = {}) {
     const ids = catalog.map((m) => m.id);
 
     state[CATALOG_FIELD] = catalog.map(toModelEntry);
+
+    // Turn the BYOK toggle on. Without this, Cursor treats the account as not using
+    // a key, and its next settings reconcile prunes the models seeded above.
+    state[USE_KEY_FIELD] = true;
+
+    // Clean up a bogus field written by earlier versions of this tool, which
+    // mistook the display rendering of the key for the key itself.
+    delete state[BOGUS_KEY_FIELD];
 
     const ai = (state.aiSettings ??= {});
     ai.userAddedModels = ids;

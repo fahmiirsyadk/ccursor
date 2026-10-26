@@ -32,6 +32,15 @@ virtualenv — `node:sqlite` replaces the external driver.
 
 ### Fixed
 
+- The CLI did nothing when invoked through a symlink: the entry-point guard compared
+  `process.argv[1]` with the module path using `path.resolve`, which does not follow
+  symlinks, so `main()` never ran and the process exited 0. `npm link`, documented in
+  the README, hits exactly this. Now compares real paths via `fileURLToPath`.
+- The BYOK toggle constant was assembled from the wrong parts and produced a bogus
+  field name with literal brackets. Seeding wrote that field while Cursor's real
+  toggle stayed `false`, so Cursor kept treating the account as not using a key and
+  pruned the seeded models on the next reconcile. Seeding now sets the real field and
+  deletes the bogus one; the exact bytes are pinned by a test.
 - `run` consumed flags meant for Cursor: `cursor-byok run --appimage x` swallowed
   the argument instead of forwarding it. `run` now takes no options of its own and
   passes every trailing token to the launcher, since Cursor's flag set is not ours

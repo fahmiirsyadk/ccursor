@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as bundles from "./bundles.js";
 import * as ccursor from "./ccursor.js";
@@ -577,9 +578,24 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+/**
+ * Run only when this file is the entry point.
+ *
+ * Compare real paths on both sides: `npm link` (documented in the README) puts a
+ * symlink in the global bin directory, and path.resolve() does not follow it. A
+ * plain comparison made the CLI exit 0 without doing anything, which looks like
+ * success. fileURLToPath also handles spaces and percent-encoding, which
+ * `new URL(...).pathname` does not.
+ */
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
 
-if (invokedDirectly) {
+if (isEntryPoint()) {
   main().then((code) => process.exit(code));
 }
