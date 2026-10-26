@@ -1,0 +1,304 @@
+/**
+ * The tool loop.
+ *
+ * Agent mode is a loop: the model asks for a tool, the editor runs it, the result
+ * goes back to the model. This drives that loop end to end with a stub provider and
+ * a client that answers exec requests the way Cursor does.
+ */
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { after, before, describe, it } from "node:test";
+
+import { discover } from "../src/locate.js";
+import { loadRoot } from "../src/proto/schema.js";
+import { FrameReader } from "../src/proto/connect.js";
+import { TOOL_TYPES, EXEC_CASES, findTool, providerTools, renderResult } from "../src/agent/tools.js";
+
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-byok-tools-"));
+const savedEnv = { ...process.env };
+
+after(() => {
+  process.env = { ...savedEnv };
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
+});
+
+function extensionJs() {
+  const found = discover();
+  if (!found.appRoot) return null;
+  const file = path.join(found.appRoot, "extensions", "cursor2plus", "dist", "extension.js");
+  return fs.existsSync(file) ? file : null;
+}
+
+const bundle = extensionJs();
+const skip = bundle ? false : "no Cursor install with the BYOK extension on this machine";
+
+describe("tool catalog", () => {
+  it("maps every tool to a Cursor tool type and an exec case", () => {
+    for (const tool of providerTools()) {
+      assert.ok(TOOL_TYPES[tool.name], `${tool.name} has a tool type`);
+      assert.ok(EXEC_CASES[tool.name], `${tool.name} has an exec case`);
+    }
+  });
+
+  it("resolves the aliases Cursor's Anthropic profile uses", () => {
+    assert.equal(findTool("ReadFile")?.name, "Read");
+    assert.equal(findTool("rg")?.name, "Grep");
+    assert.equal(findTool("Nope"), null);
+  });
+
+  it("builds Read arguments", () => {
+    const args = findTool("Read").buildArgs({ path: "/a", offset: 2, limit: 10 }, "c1");
+    assert.deepEqual(args, { path: "/a", toolCallId: "c1", offset: 2, limit: 10 });
+  });
+
+  it("normalises line endings before a write", () => {
+    const args = findTool("Write").buildArgs({ path: "/a", contents: "a\r\nb\rc" }, "c1");
+    assert.equal(args.fileText, "a\nb\nc");
+    assert.equal(args.streamContent, "a\nb\nc");
+    assert.equal(args.encodingHint, "utf8");
+  });
+
+  it("turns a glob into a recursive pattern", () => {
+    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "*.ts" }, "c1").pattern, "**/*.ts");
+    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "**/*.ts" }, "c1").pattern, "**/*.ts");
+  });
+
+  it("renders a read result as its content", () => {
+    assert.equal(renderResult("Read", { success: { content: "body" } }), "body");
+  });
+
+  it("renders a rejected call so the model stops retrying", () => {
+    assert.match(renderResult("Read", { rejected: {} }), /rejected/);
+  });
+
+  it("renders a shell failure with the exit code", () => {
+    const text = renderResult("Shell", {
+      success: { stdout: "out", stderr: "bad", exit_code: 2 },
+    });
+    assert.match(text, /out/);
+    assert.match(text, /bad/);
+    assert.match(text, /exit code 2/);
+  });
+
+  it("renders glob matches", () => {
+    assert.equal(
+      renderResult("Glob", { success: { files: ["/a.ts", "/b.ts"] } }),
+      "/a.ts\n/b.ts",
+    );
+  });
+
+  it("renders an empty match set", () => {
+    assert.equal(renderResult("Grep", { success: { output_mode: "files_with_matches" } }), "No files matched.");
+  });
+});
+
+// ---------------------------------------------------------------- the loop
+
+/** A provider that answers with a scripted sequence of chunks per request. */
+function startStubProvider(script) {
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (piece) => (body += piece));
+    req.on("end", () => {
+      server.requests.push(JSON.parse(body));
+      const chunks = script.shift() ?? [];
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const chunk of chunks) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+  });
+  server.requests = [];
+
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
+}
+
+function toolCallChunks(id, name, args) {
+  return [
+    {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 0, id, function: { name, arguments: "" } },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      choices: [
+        {
+          index: 0,
+          delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 20, completion_tokens: 5 },
+    },
+  ];
+}
+
+function textChunks(text) {
+  return [
+    { choices: [{ index: 0, delta: { content: text }, finish_reason: null }] },
+    {
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 30, completion_tokens: 4 },
+    },
+  ];
+}
+
+describe("tool loop", { skip }, () => {
+  let stub;
+  let instance;
+  let root;
+  let base;
+
+  before(async () => {
+    root = loadRoot(bundle);
+    stub = await startStubProvider([
+      toolCallChunks("call-1", "Read", { path: "/tmp/example.txt" }),
+      textChunks("The file says hello."),
+    ]);
+
+    const home = path.join(tmpRoot, "home");
+    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".ccursor", "providers.json"),
+      JSON.stringify({
+        providers: [
+          {
+            id: "stub",
+            name: "Stub",
+            type: "openai-chat",
+            baseUrl: `http://127.0.0.1:${stub.address().port}/v1`,
+            auth: { kind: "apiKey", value: "k" },
+            models: [{ id: "stub/model", apiModel: "stub-model" }],
+          },
+        ],
+      }),
+    );
+
+    process.env.HOME = home;
+    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state");
+
+    const { createServer } = await import("../src/server.js");
+    instance = createServer({ extensionJs: bundle, port: 0 });
+    const address = await instance.listen();
+    base = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    await instance?.close();
+    await new Promise((resolve) => stub.close(resolve));
+  });
+
+  it("asks the editor to run the tool and feeds the result back", async () => {
+    const client = root.lookupType("agent.v1.AgentClientMessage");
+    const appendType = root.lookupType("aiserver.v1.BidiAppendRequest");
+    const requestId = "tool-run-1";
+
+    const runRequest = {
+      conversation_id: "conv-tools",
+      requested_model: { model_id: "stub/model" },
+      action: { user_message_action: { user_message: { text: "read the file" } } },
+      conversation_state: { mode: 1 },
+    };
+
+    const appended = await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
+      method: "POST",
+      headers: { "content-type": "application/proto" },
+      body: appendType.encode(
+        appendType.fromObject({
+          request_id: { request_id: requestId },
+          data_binary: client.encode(client.fromObject({ run_request: runRequest })).finish(),
+        }),
+      ).finish(),
+    });
+    assert.equal(appended.status, 200);
+
+    const idType = root.lookupType("aiserver.v1.BidiRequestId");
+    const response = await fetch(`${base}/agent.v1.AgentService/RunSSE`, {
+      method: "POST",
+      headers: { "content-type": "application/connect+proto" },
+      body: idType.encode(idType.fromObject({ request_id: requestId })).finish(),
+    });
+
+    const ServerMessage = root.lookupType("agent.v1.AgentServerMessage");
+    const reader = new FrameReader();
+    const seen = [];
+    let replied = false;
+
+    for await (const chunk of response.body) {
+      for (const item of reader.push(Buffer.from(chunk))) {
+        if (item.flags === 2) continue;
+        const message = ServerMessage.decode(item.payload);
+        seen.push(message);
+
+        // Answer the exec request the way the editor would.
+        const exec = message.exec_server_message;
+        if (exec && !replied) {
+          replied = true;
+          assert.equal(exec.read_args?.path, "/tmp/example.txt");
+
+          await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
+            method: "POST",
+            headers: { "content-type": "application/proto" },
+            body: appendType.encode(
+              appendType.fromObject({
+                request_id: { request_id: requestId },
+                data_binary: client
+                  .encode({
+                    exec_client_message: {
+                      id: exec.id,
+                      exec_id: exec.exec_id,
+                      read_result: {
+                        success: { content: "hello", path: "/tmp/example.txt", total_lines: 1 },
+                      },
+                    },
+                  })
+                  .finish(),
+              }),
+            ).finish(),
+          });
+        }
+      }
+    }
+
+    const kinds = seen.map((message) => Object.keys(message).find((key) => message[key] !== undefined));
+
+    assert.ok(kinds.includes("exec_server_message"), "asked the editor to run the tool");
+    assert.ok(
+      seen.some((message) => message.interaction_update?.tool_call_started),
+      "announced the tool call",
+    );
+    assert.ok(
+      seen.some((message) => message.interaction_update?.tool_call_completed),
+      "reported the tool result",
+    );
+
+    const text = seen
+      .map((message) => message.interaction_update?.text_delta?.text)
+      .filter(Boolean)
+      .join("");
+    assert.equal(text, "The file says hello.");
+
+    // The second provider request must carry the tool result.
+    const second = stub.requests[1];
+    const toolMessage = second.messages.find((message) => message.role === "tool");
+    assert.ok(toolMessage, "tool result reached the provider");
+    assert.equal(toolMessage.content, "hello");
+    assert.equal(toolMessage.tool_call_id, "call-1");
+    assert.ok(second.tools.some((tool) => tool.function.name === "Read"));
+  });
+});

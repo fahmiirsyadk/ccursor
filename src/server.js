@@ -214,20 +214,37 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
           if (!res.writableEnded) controller.abort();
         });
 
-        const queued = await next(requestId, 60_000);
-        if (!queued) {
+        // A queued message can arrive as a conversation action before the run
+        // request itself; keep it and keep waiting.
+        let queued = "";
+        let runRequest = null;
+        for (;;) {
+          const message = await next(requestId, 60_000);
+          if (!message) break;
+
+          const queuedText = message.conversation_action?.user_message_action?.user_message?.text;
+          if (typeof queuedText === "string" && queuedText.length > 0) queued = queuedText;
+
+          if (message.run_request) {
+            runRequest = message.run_request;
+            break;
+          }
+        }
+
+        if (!runRequest) {
           res.end(endFrame({ error: { code: "deadline_exceeded", message: "no run request arrived" } }));
           closeSession(requestId);
           return;
         }
 
-        const runRequest = queued.run_request ?? queued;
         const providers = readJson(providersFile())?.providers ?? [];
 
         for await (const message of runTurn({
           root: getRoot(),
           request: runRequest,
           providers,
+          requestId,
+          queued,
           signal: controller.signal,
         })) {
           if (res.writableEnded || res.destroyed) break;

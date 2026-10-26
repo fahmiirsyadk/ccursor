@@ -11,11 +11,15 @@ import { lookupType } from "../proto/schema.js";
 
 const SERVER_MESSAGE = "agent.v1.AgentServerMessage";
 
+/** Encode any AgentServerMessage from a plain object. */
+export function encodeMessage(root, value) {
+  const Type = lookupType(root, SERVER_MESSAGE);
+  return Buffer.from(Type.encode(Type.fromObject(value)).finish());
+}
+
 /** Encode one interaction update into an AgentServerMessage. */
 export function encode(root, update) {
-  const Type = lookupType(root, SERVER_MESSAGE);
-  const message = Type.fromObject({ interaction_update: update });
-  return Buffer.from(Type.encode(message).finish());
+  return encodeMessage(root, { interaction_update: update });
 }
 
 /** Liveness. Cursor expects one every few seconds while a turn is quiet. */

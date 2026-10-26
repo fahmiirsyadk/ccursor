@@ -154,9 +154,10 @@ export function userText(runRequest, queued) {
  * Assemble the conversation for this turn.
  *
  * @param {object} runRequest decoded agent.v1.AgentRunRequest
+ * @param {string} [queued] text that arrived before the run request
  * @returns {Array<{role: string, content: any}>}
  */
-export function conversation(runRequest) {
+export function conversation(runRequest, queued) {
   const action = runRequest?.action ?? {};
   const state = runRequest?.conversation_state ?? {};
   const messages = [];
@@ -188,7 +189,7 @@ export function conversation(runRequest) {
     unique.push(message);
   }
 
-  const text = userText(runRequest);
+  const text = userText(runRequest, queued);
   if (text.length > 0) {
     const last = unique[unique.length - 1];
     const alreadyThere = last?.role === ROLE_USER && last.content === text;
