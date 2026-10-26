@@ -15,6 +15,7 @@ import { systemPrompt } from "./prompt.js";
 import { resolveModel, stream } from "./provider.js";
 import { EXEC_CASES, TOOL_TYPES, findTool, providerTools, renderResult, toToolResult } from "./tools.js";
 import { execServerMessage, toolCallCompleted, toolCallStarted, waitForExec } from "./exec.js";
+import { detail, info } from "../ui.js";
 import {
   heartbeat,
   stepCompleted,
@@ -294,6 +295,8 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     return execCounter;
   };
   let stepId = 1;
+  let textTotal = 0;
+  const usedTools = [];
 
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     if (signal?.aborted) return;
@@ -335,6 +338,7 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
             thinkingStarted = 0;
           }
           textChars += event.text.length;
+          textTotal += event.text.length;
           sinceToken += event.text.length;
           yield textDelta(root, event.text);
           if (sinceToken >= TOKEN_EVERY_CHARS) {
@@ -380,6 +384,10 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     yield stepCompleted(root, stepId, Date.now() - roundStarted);
 
     if (stopReason !== "tool_use" || calls.length === 0) {
+      info(
+        `turn done: ${usedTools.length > 0 ? usedTools.join(", ") : "no tools"}, ` +
+          `${textTotal} chars, ${usage.inputTokens}in/${usage.outputTokens}out`,
+      );
       yield turnEnded(root, usage);
       return;
     }
@@ -408,6 +416,9 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
         continue;
       }
 
+      detail(`tool ${call.name} ${String(JSON.stringify(parseArguments(call.arguments))).slice(0, 120)}`);
+      usedTools.push(call.name);
+
       const outcome = yield* runTool({
         root,
         requestId,
@@ -429,6 +440,10 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     stepId += 1;
   }
 
+  info(
+    `turn done: ${usedTools.length > 0 ? usedTools.join(", ") : "no tools"}, ` +
+      `${textTotal} chars, ${usage.inputTokens}in/${usage.outputTokens}out`,
+  );
   yield turnEnded(root, usage);
 }
 

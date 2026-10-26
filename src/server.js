@@ -21,7 +21,7 @@ import { buildAvailableModels, catalogFromProviders } from "./catalog.js";
 import { loadRoot } from "./proto/schema.js";
 import { endFrame, errorBody, frame, parseRpcPath } from "./proto/connect.js";
 import { DEFAULT_PORT, providersFile, readJson } from "./paths.js";
-import { detail, fail, info, ok } from "./ui.js";
+import { detail, fail, info, ok, warn } from "./ui.js";
 import { putBlob } from "./agent/blobs.js";
 import { closeSession, deliver, next, openSession, sessionCount, sweep } from "./agent/session.js";
 import { runTurn } from "./agent/turn.js";
@@ -172,6 +172,7 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     const method = getMethods().get(route);
     if (!method) {
       stats.errors += 1;
+      warn(`${route} is not in Cursor's schema`);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(errorBody(UNAVAILABLE, `${route} not implemented`));
       return;
