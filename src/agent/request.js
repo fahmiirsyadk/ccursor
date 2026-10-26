@@ -275,6 +275,19 @@ export function modelId(runRequest) {
   );
 }
 
+/**
+ * The subagent type, when this run *is* a subagent.
+ *
+ * Cursor runs a subagent in its own session with its own RunSSE, and marks the run
+ * request with `subagent_type_name`. Empty means this is a top-level turn.
+ *
+ * @returns {string} e.g. "explore", or "" for a top-level turn
+ */
+export function subagentType(runRequest) {
+  const name = runRequest?.subagent_type_name;
+  return typeof name === "string" ? name.trim().toLowerCase().replace(/-/g, "_") : "";
+}
+
 /** Conversation id, used for logs and for resuming a run. */
 export function conversationId(runRequest) {
   return runRequest?.conversation_id || "";

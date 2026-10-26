@@ -17,7 +17,14 @@ import { discover } from "../src/locate.js";
 import { loadRoot } from "../src/proto/schema.js";
 import { FrameReader } from "../src/proto/connect.js";
 import { bidiAppendBody, stream, unary } from "./helpers/rpc.js";
-import { TOOL_TYPES, EXEC_CASES, findTool, providerTools, renderResult } from "../src/agent/tools.js";
+import {
+  EXEC_CASES,
+  TOOL_TYPES,
+  findTool,
+  providerTools,
+  renderResult,
+  toolNames,
+} from "../src/agent/tools.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-byok-tools-"));
 const savedEnv = { ...process.env };
@@ -468,5 +475,157 @@ describe("edit flow", { skip }, () => {
     assert.equal(edit.result.success.after_full_file_content, "alpha\ngamma\n");
     assert.equal(edit.result.success.lines_added, 1);
     assert.equal(edit.result.success.lines_removed, 1);
+  });
+});
+
+describe("subagents", () => {
+  it("marks a run request that is itself a subagent", async () => {
+    const { subagentType } = await import("../src/agent/request.js");
+
+    assert.equal(subagentType({ subagent_type_name: "explore" }), "explore");
+    assert.equal(subagentType({ subagent_type_name: "Browser-Use" }), "browser_use");
+    assert.equal(subagentType({}), "");
+    assert.equal(subagentType({ subagent_type_name: "   " }), "");
+  });
+
+  it("never offers Task to a subagent", () => {
+    // A subagent that is given Task delegates the same work again: one request
+    // spawned two subagents doing the same exploration because of this.
+    for (const type of ["explore", "debug", "bash", "custom", "whatever"]) {
+      const names = toolNames({ subagent: type });
+      assert.equal(names.includes("Task"), false, type);
+    }
+  });
+
+  it("still offers Task to a top-level turn", () => {
+    assert.ok(toolNames().includes("Task"));
+  });
+
+  it("restricts an explore subagent to reading", () => {
+    const names = toolNames({ subagent: "explore" });
+    assert.deepEqual(names.sort(), ["Glob", "Grep", "Read"]);
+  });
+
+  it("lets a bash subagent change things", () => {
+    const names = toolNames({ subagent: "bash" });
+    assert.ok(names.includes("Shell"));
+    assert.ok(names.includes("Write"));
+  });
+
+  it("gives a subagent its own system prompt", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+
+    assert.match(systemPrompt({}, "explore"), /subagent/i);
+    assert.match(systemPrompt({}, "explore"), /cannot delegate/i);
+    assert.match(systemPrompt({}, "explore"), /Do not change anything/);
+    assert.equal(systemPrompt({}, ""), systemPrompt({}));
+  });
+
+  it("still honours a custom prompt inside a subagent", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    assert.equal(systemPrompt({ custom_system_prompt: "be brief" }, "explore"), "be brief");
+  });
+});
+
+describe("subagent delegation is refused", { skip }, () => {
+  let stub;
+  let instance;
+  let root;
+  let base;
+
+  before(async () => {
+    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
+
+    // The model, running as a subagent, tries to delegate anyway.
+    stub = await startStubProvider([
+      toolCallChunks("nested-1", "Task", { description: "again", prompt: "explore again" }),
+      textChunks("I will do it myself."),
+    ]);
+
+    const home = path.join(tmpRoot, "home-nested");
+    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".ccursor", "providers.json"),
+      JSON.stringify({
+        providers: [
+          {
+            id: "stub",
+            name: "Stub",
+            type: "openai-chat",
+            baseUrl: `http://127.0.0.1:${stub.address().port}/v1`,
+            auth: { kind: "apiKey", value: "k" },
+            models: [{ id: "stub/model", apiModel: "stub-model" }],
+          },
+        ],
+      }),
+    );
+
+    process.env.HOME = home;
+    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state-nested");
+
+    const { createServer } = await import("../src/server.js");
+    instance = createServer({ extensionJs: bundle, port: 0 });
+    const address = await instance.listen();
+    base = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    await instance?.close();
+    await new Promise((resolve) => stub.close(resolve));
+  });
+
+  it("does not spawn a nested subagent", async () => {
+    const client = root.lookupType("agent.v1.AgentClientMessage");
+    const idType = root.lookupType("aiserver.v1.BidiRequestId");
+    const requestId = "nested-run-1";
+
+    await unary(
+      base,
+      "aiserver.v1.BidiService/BidiAppend",
+      bidiAppendBody(root, requestId, {
+        run_request: {
+          conversation_id: "conv-nested",
+          requested_model: { model_id: "stub/model" },
+          subagent_type_name: "explore",
+          action: { user_message_action: { user_message: { text: "map the repo" } } },
+          conversation_state: { mode: 1 },
+        },
+      }),
+    );
+
+    const response = await stream(
+      base,
+      "agent.v1.AgentService/RunSSE",
+      idType.encode(idType.fromObject({ request_id: requestId })).finish(),
+    );
+
+    const ServerMessage = root.lookupType("agent.v1.AgentServerMessage");
+    const reader = new FrameReader();
+    const execCases = [];
+
+    for await (const chunk of response.body) {
+      for (const item of reader.push(Buffer.from(chunk))) {
+        if (item.flags & 2) continue;
+        const message = ServerMessage.decode(item.payload);
+        const exec = message.exec_server_message;
+        if (!exec) continue;
+        const caseName = Object.keys(exec).find((key) => key !== "id" && key !== "exec_id" && exec[key]);
+        execCases.push(caseName);
+      }
+    }
+
+    assert.equal(execCases.includes("subagent_args"), false, "no nested subagent was spawned");
+
+    // The provider was told, so the next round can recover instead of retrying.
+    const second = stub.requests[1];
+    const toolMessage = second.messages.find((message) => message.role === "tool");
+    assert.match(toolMessage.content, /already a subagent/);
+
+    // And Task was never offered in the first place.
+    assert.equal(
+      second.tools?.some((tool) => tool.function.name === "Task") ?? false,
+      false,
+      "Task is not in the subagent's tool list",
+    );
   });
 });

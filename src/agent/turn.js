@@ -10,7 +10,7 @@
  * asking. The loop lives here because the conversation state lives here.
  */
 
-import { conversation, imagesFrom, modelId } from "./request.js";
+import { conversation, imagesFrom, modelId, subagentType } from "./request.js";
 import {
   annotate,
   corruptNote,
@@ -290,6 +290,10 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
 
   const { provider, apiModel } = resolved;
 
+  // A subagent is a run in its own right, with its own RunSSE. It must not be given
+  // the Task tool: it would re-delegate the same work one level deeper.
+  const subagent = subagentType(request);
+
   let turns = conversation(request, queued);
   const all = imagesFrom(request);
 
@@ -325,8 +329,11 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     yield textDelta(root, droppedNotice(images, resolved.model.id, ocr.length));
   }
 
-  let messages = [{ role: "system", content: systemPrompt(request) }, ...turns];
-  const tools = providerTools();
+  let messages = [{ role: "system", content: systemPrompt(request, subagent) }, ...turns];
+  const tools = providerTools({ subagent });
+  if (subagent) {
+    info(`subagent turn: ${subagent} (${tools.length} tools: ${tools.map((t) => t.name).join(", ")})`);
+  }
 
   yield heartbeat(root);
 
@@ -464,6 +471,21 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
 
     for (const call of calls) {
       const tool = findTool(call.name);
+
+      if (subagent && tool?.name === "Task") {
+        // Belt and braces: the tool is not offered, but a model can still emit it.
+        warn(`subagent ${subagent} tried to delegate again; refused`);
+        messages.push({
+          role: "tool",
+          toolCallId: call.id,
+          toolName: call.name,
+          content:
+            "Error: you are already a subagent. Do the work yourself with the tools " +
+            "you have; do not delegate again.",
+        });
+        continue;
+      }
+
       if (!tool) {
         messages.push({
           role: "tool",

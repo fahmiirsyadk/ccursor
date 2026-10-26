@@ -338,13 +338,41 @@ export function findTool(name) {
   return alias ? byName.get(alias) : null;
 }
 
-/** The tool list handed to the provider. */
-export function providerTools() {
-  return TOOLS.map((tool) => ({
+/**
+ * Tools that only read.
+ *
+ * An explore subagent must not write, and more importantly must not delegate: a
+ * subagent that is given Task re-runs the same exploration one level deeper, which
+ * is what made one request spawn two subagents doing the same work.
+ */
+const READ_ONLY = new Set(["Read", "Grep", "Glob"]);
+
+/** Subagent types that may only look, never change anything. */
+const READ_ONLY_SUBAGENTS = new Set(["explore", "media_review", "watch_video", "cursor_guide"]);
+
+/**
+ * The tool list handed to the provider.
+ *
+ * @param {object} [options]
+ * @param {string} [options.subagent] subagent type, when this run is a subagent
+ * @returns {Array<{name: string, description: string, parameters: object}>}
+ */
+export function providerTools({ subagent = "" } = {}) {
+  return TOOLS.filter((tool) => {
+    // Delegating from a subagent is always wrong: it is already the delegation.
+    if (subagent && tool.name === "Task") return false;
+    if (READ_ONLY_SUBAGENTS.has(subagent) && !READ_ONLY.has(tool.name)) return false;
+    return true;
+  }).map((tool) => ({
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
   }));
+}
+
+/** Names of the tools offered for a given subagent type. */
+export function toolNames(options) {
+  return providerTools(options).map((tool) => tool.name);
 }
 
 /** Join the text parts of a Grep content match. */
