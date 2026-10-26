@@ -1,25 +1,29 @@
 /**
  * ConnectRPC framing.
  *
- * Cursor talks to its backend with the Connect protocol, not gRPC. Two shapes:
+ * Cursor talks to its backend with the Connect protocol, via @connectrpc/connect-web
+ * and @bufbuild/protobuf. Two shapes:
  *
  * Unary
  *   POST /pkg.Service/Method
  *   content-type: application/proto
- *   body: the raw message bytes, no envelope
- *   response: the raw message bytes, no envelope
+ *   body: the message bytes, possibly compressed (connect-content-encoding: gzip)
+ *   response: the message bytes, no envelope
  *
  * Streaming (server-stream, bidi)
- *   Each message is a 5-byte envelope followed by the payload:
- *     byte 0      flags: 0x00 data, 0x02 end-of-stream
+ *   Request and response are both a sequence of envelopes:
+ *     byte 0      flags: 0x01 compressed, 0x02 end-of-stream, else data
  *     bytes 1..4  payload length, big-endian uint32
  *   The end-of-stream frame carries a JSON trailer in its payload.
  *
- * Verified against a live install: an empty AvailableModels request returns 525
- * bytes of bare protobuf, and RunSSE streams envelopes.
+ * Verified against a live install: an empty AvailableModels request returns bare
+ * protobuf, RunSSE streams envelopes, and Cursor's client gzips unary requests.
  */
 
+import zlib from "node:zlib";
+
 export const FLAG_DATA = 0x00;
+export const FLAG_COMPRESSED = 0x01;
 export const FLAG_END = 0x02;
 export const ENVELOPE_BYTES = 5;
 
@@ -70,6 +74,61 @@ export class FrameReader {
   get remainder() {
     return this.buffer;
   }
+}
+
+/** Compression Cursor may apply, keyed by the encoding name it announces. */
+const DECODERS = {
+  gzip: (data) => zlib.gunzipSync(data),
+  deflate: (data) => zlib.inflateSync(data),
+  br: (data) => zlib.brotliDecompressSync(data),
+};
+
+/** Decompress a body if the request says it is compressed. */
+export function decompress(body, encoding) {
+  if (!encoding) return body;
+  const name = String(encoding).trim().toLowerCase();
+  if (name === "" || name === "identity") return body;
+  const decode = DECODERS[name];
+  if (!decode) throw new Error(`unsupported content-encoding: ${encoding}`);
+  return decode(body);
+}
+
+/**
+ * The encoding a Connect request used.
+ *
+ * `connect-content-encoding` is the protocol header; `content-encoding` is what
+ * plain HTTP would use. Either may appear.
+ */
+export function requestEncoding(headers = {}) {
+  return headers["connect-content-encoding"] ?? headers["content-encoding"] ?? "";
+}
+
+/**
+ * Unwrap a streaming request body into its messages.
+ *
+ * The client frames these even for a request that carries a single message, and may
+ * compress each frame individually. A body that is not framed at all is accepted as
+ * one message, because that is what a hand-written client sends.
+ */
+export function readStreamRequest(body, encoding) {
+  if (body.length === 0) return [];
+
+  const looksFramed = (buf) =>
+    buf.length >= ENVELOPE_BYTES &&
+    (buf[0] === FLAG_DATA || buf[0] === FLAG_COMPRESSED || buf[0] === FLAG_END);
+
+  // A client may compress the whole body before framing it, or leave it unframed.
+  let buffer = body;
+  if (!looksFramed(buffer) && encoding) buffer = decompress(buffer, encoding);
+  if (!looksFramed(buffer)) return [buffer];
+
+  const reader = new FrameReader();
+  const messages = [];
+  for (const item of reader.push(buffer)) {
+    if (item.flags & FLAG_END) continue;
+    messages.push(item.flags & FLAG_COMPRESSED ? decompress(item.payload, encoding || "gzip") : item.payload);
+  }
+  return messages;
 }
 
 /** Path helpers: "/aiserver.v1.AiService/AvailableModels" -> parts. */

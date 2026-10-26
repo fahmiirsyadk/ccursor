@@ -19,7 +19,15 @@ import http from "node:http";
 
 import { buildAvailableModels, catalogFromProviders } from "./catalog.js";
 import { loadRoot } from "./proto/schema.js";
-import { endFrame, errorBody, frame, parseRpcPath } from "./proto/connect.js";
+import {
+  decompress,
+  endFrame,
+  errorBody,
+  frame,
+  parseRpcPath,
+  readStreamRequest,
+  requestEncoding,
+} from "./proto/connect.js";
 import { DEFAULT_PORT, providersFile, readJson } from "./paths.js";
 import { detail, fail, info, ok, warn } from "./ui.js";
 import { putBlob } from "./agent/blobs.js";
@@ -210,7 +218,7 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       try {
-        const body = handler(Buffer.concat(chunks));
+        const body = handler(decompress(Buffer.concat(chunks), requestEncoding(req.headers)));
         res.writeHead(200, {
           "content-type": "application/proto",
           "content-length": body.length,
@@ -268,8 +276,13 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     req.on("end", async () => {
       let requestId = "";
       try {
-        const body = Buffer.concat(chunks);
-        requestId = body.length ? decode("aiserver.v1.BidiRequestId", body).request_id : "";
+        // A streaming request arrives framed, and may be compressed per frame.
+        const messages = readStreamRequest(
+          Buffer.concat(chunks),
+          requestEncoding(req.headers),
+        );
+        const first = messages[0];
+        requestId = first ? decode("aiserver.v1.BidiRequestId", first).request_id : "";
         if (!requestId) throw new Error("RunSSE without request_id");
 
         stats.runSSE += 1;

@@ -16,6 +16,7 @@ import { after, before, describe, it } from "node:test";
 import { discover } from "../src/locate.js";
 import { loadRoot } from "../src/proto/schema.js";
 import { FrameReader } from "../src/proto/connect.js";
+import { stream, unary } from "./helpers/rpc.js";
 import { TOOL_TYPES, EXEC_CASES, findTool, providerTools, renderResult } from "../src/agent/tools.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-byok-tools-"));
@@ -215,24 +216,24 @@ describe("tool loop", { skip }, () => {
       conversation_state: { mode: 1 },
     };
 
-    const appended = await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-      method: "POST",
-      headers: { "content-type": "application/proto" },
-      body: appendType.encode(
+    const appended = await unary(
+      base,
+      "aiserver.v1.BidiService/BidiAppend",
+      appendType.encode(
         appendType.fromObject({
           request_id: { request_id: requestId },
           data_binary: client.encode(client.fromObject({ run_request: runRequest })).finish(),
         }),
       ).finish(),
-    });
+    );
     assert.equal(appended.status, 200);
 
     const idType = root.lookupType("aiserver.v1.BidiRequestId");
-    const response = await fetch(`${base}/agent.v1.AgentService/RunSSE`, {
-      method: "POST",
-      headers: { "content-type": "application/connect+proto" },
-      body: idType.encode(idType.fromObject({ request_id: requestId })).finish(),
-    });
+    const response = await stream(
+      base,
+      "agent.v1.AgentService/RunSSE",
+      idType.encode(idType.fromObject({ request_id: requestId })).finish(),
+    );
 
     const ServerMessage = root.lookupType("agent.v1.AgentServerMessage");
     const reader = new FrameReader();
@@ -251,10 +252,10 @@ describe("tool loop", { skip }, () => {
           replied = true;
           assert.equal(exec.read_args?.path, "/tmp/example.txt");
 
-          await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-            method: "POST",
-            headers: { "content-type": "application/proto" },
-            body: appendType.encode(
+          await unary(
+            base,
+            "aiserver.v1.BidiService/BidiAppend",
+            appendType.encode(
               appendType.fromObject({
                 request_id: { request_id: requestId },
                 data_binary: client
@@ -270,7 +271,7 @@ describe("tool loop", { skip }, () => {
                   .finish(),
               }),
             ).finish(),
-          });
+          );
         }
       }
     }
@@ -390,10 +391,10 @@ describe("edit flow", { skip }, () => {
     const appendType = root.lookupType("aiserver.v1.BidiAppendRequest");
     const requestId = "edit-run-1";
 
-    await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-      method: "POST",
-      headers: { "content-type": "application/proto" },
-      body: appendType.encode(
+    await unary(
+      base,
+      "aiserver.v1.BidiService/BidiAppend",
+      appendType.encode(
         appendType.fromObject({
           request_id: { request_id: requestId },
           data_binary: client
@@ -408,14 +409,14 @@ describe("edit flow", { skip }, () => {
             .finish(),
         }),
       ).finish(),
-    });
+    );
 
     const idType = root.lookupType("aiserver.v1.BidiRequestId");
-    const response = await fetch(`${base}/agent.v1.AgentService/RunSSE`, {
-      method: "POST",
-      headers: { "content-type": "application/connect+proto" },
-      body: idType.encode(idType.fromObject({ request_id: requestId })).finish(),
-    });
+    const response = await stream(
+      base,
+      "agent.v1.AgentService/RunSSE",
+      idType.encode(idType.fromObject({ request_id: requestId })).finish(),
+    );
 
     const ServerMessage = root.lookupType("agent.v1.AgentServerMessage");
     const reader = new FrameReader();
@@ -437,10 +438,10 @@ describe("edit flow", { skip }, () => {
 
         if (exec.read_args) {
           cases.push("read");
-          await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-            method: "POST",
-            headers: { "content-type": "application/proto" },
-            body: appendType.encode(
+          await unary(
+            base,
+            "aiserver.v1.BidiService/BidiAppend",
+            appendType.encode(
               appendType.fromObject({
                 request_id: { request_id: requestId },
                 data_binary: client
@@ -456,16 +457,16 @@ describe("edit flow", { skip }, () => {
                   .finish(),
               }),
             ).finish(),
-          });
+          );
         }
 
         if (exec.write_args) {
           cases.push("write");
           written = exec.write_args.file_text;
-          await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-            method: "POST",
-            headers: { "content-type": "application/proto" },
-            body: appendType.encode(
+          await unary(
+            base,
+            "aiserver.v1.BidiService/BidiAppend",
+            appendType.encode(
               appendType.fromObject({
                 request_id: { request_id: requestId },
                 data_binary: client
@@ -481,7 +482,7 @@ describe("edit flow", { skip }, () => {
                   .finish(),
               }),
             ).finish(),
-          });
+          );
         }
       }
     }

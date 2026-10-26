@@ -14,6 +14,7 @@ import { after, before, describe, it } from "node:test";
 
 import { discover } from "../src/locate.js";
 import { loadRoot } from "../src/proto/schema.js";
+import { stream, unary } from "./helpers/rpc.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-byok-local-"));
 const savedEnv = { ...process.env };
@@ -128,11 +129,12 @@ describe("local RPC surface", { skip }, () => {
 
   it("answers every redirected RPC without an error", async () => {
     for (const route of ROUTES) {
-      const response = await fetch(`${base}/${route}`, {
-        method: "POST",
-        headers: { "content-type": "application/proto" },
-        body: Buffer.alloc(0),
-      });
+      const method = methodFor(root, route);
+      // Streaming RPCs get a framed request, unary ones a plain body, exactly as
+      // the client sends them.
+      const response = method?.responseStream
+        ? await stream(base, route, Buffer.alloc(0))
+        : await unary(base, route, Buffer.alloc(0));
 
       assert.equal(response.status, 200, route);
 
@@ -145,7 +147,6 @@ describe("local RPC surface", { skip }, () => {
       const body = Buffer.from(await response.arrayBuffer());
       if (type === "application/proto") {
         // A real message of the declared type, not an error object.
-        const method = instance.server && methodFor(root, route);
         assert.ok(method, `${route} exists in the schema`);
         assert.doesNotThrow(() => {
           root.lookupType(String(method.responseType).replace(/^\./, "")).decode(body);
@@ -157,7 +158,7 @@ describe("local RPC surface", { skip }, () => {
   });
 
   it("reports a plausible clock", async () => {
-    const response = await fetch(`${base}/aiserver.v1.AiService/ServerTime`, { method: "POST" });
+    const response = await unary(base, "aiserver.v1.AiService/ServerTime", Buffer.alloc(0));
     const body = Buffer.from(await response.arrayBuffer());
     const decoded = root.lookupType("aiserver.v1.ServerTimeResponse").decode(body);
 
@@ -166,7 +167,7 @@ describe("local RPC surface", { skip }, () => {
   });
 
   it("names the configured model as the default", async () => {
-    const response = await fetch(`${base}/aiserver.v1.AiService/GetDefaultModel`, { method: "POST" });
+    const response = await unary(base, "aiserver.v1.AiService/GetDefaultModel", Buffer.alloc(0));
     const body = Buffer.from(await response.arrayBuffer());
     const decoded = root.lookupType("aiserver.v1.GetDefaultModelResponse").decode(body);
 
@@ -174,7 +175,7 @@ describe("local RPC surface", { skip }, () => {
   });
 
   it("reports a plan that needs no upgrade", async () => {
-    const response = await fetch(`${base}/aiserver.v1.DashboardService/GetPlanInfo`, { method: "POST" });
+    const response = await unary(base, "aiserver.v1.DashboardService/GetPlanInfo", Buffer.alloc(0));
     const body = Buffer.from(await response.arrayBuffer());
     const decoded = root.lookupType("aiserver.v1.GetPlanInfoResponse").decode(body);
 
@@ -182,9 +183,11 @@ describe("local RPC surface", { skip }, () => {
   });
 
   it("reports no storage as the privacy mode", async () => {
-    const response = await fetch(`${base}/aiserver.v1.DashboardService/GetUserPrivacyMode`, {
-      method: "POST",
-    });
+    const response = await unary(
+      base,
+      "aiserver.v1.DashboardService/GetUserPrivacyMode",
+      Buffer.alloc(0),
+    );
     const body = Buffer.from(await response.arrayBuffer());
     const decoded = root.lookupType("aiserver.v1.GetUserPrivacyModeResponse").decode(body);
 
@@ -192,11 +195,7 @@ describe("local RPC surface", { skip }, () => {
   });
 
   it("accepts and drops analytics", async () => {
-    const response = await fetch(`${base}/aiserver.v1.AnalyticsService/Batch`, {
-      method: "POST",
-      headers: { "content-type": "application/proto" },
-      body: Buffer.alloc(0),
-    });
+    const response = await unary(base, "aiserver.v1.AnalyticsService/Batch", Buffer.alloc(0));
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/proto");

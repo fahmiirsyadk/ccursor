@@ -16,6 +16,7 @@ import { after, before, describe, it } from "node:test";
 import { discover } from "../src/locate.js";
 import { loadRoot } from "../src/proto/schema.js";
 import { FrameReader } from "../src/proto/connect.js";
+import { readStream, stream, unary } from "./helpers/rpc.js";
 import { clearBlobs, getBlob, makeBlob, readBlobJson } from "../src/agent/blobs.js";
 import { clearSessions, closeSession, deliver, next, openSession, sessionCount } from "../src/agent/session.js";
 import { conversation, modelId, userText } from "../src/agent/request.js";
@@ -323,21 +324,13 @@ describe("agent turn", { skip }, () => {
       }),
     ).finish();
 
-    const appended = await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-      method: "POST",
-      headers: { "content-type": "application/proto" },
-      body: appendBody,
-    });
+    const appended = await unary(base, "aiserver.v1.BidiService/BidiAppend", appendBody);
     assert.equal(appended.status, 200);
 
     const requestId = root.lookupType("aiserver.v1.BidiRequestId");
     const sseBody = requestId.encode(requestId.fromObject({ request_id: "run-1" })).finish();
 
-    const response = await fetch(`${base}/agent.v1.AgentService/RunSSE`, {
-      method: "POST",
-      headers: { "content-type": "application/connect+proto" },
-      body: sseBody,
-    });
+    const response = await stream(base, "agent.v1.AgentService/RunSSE", sseBody);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/connect+proto");
 
@@ -372,18 +365,14 @@ describe("agent turn", { skip }, () => {
       }),
     ).finish();
 
-    await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
-      method: "POST",
-      headers: { "content-type": "application/proto" },
-      body: appendBody,
-    });
+    await unary(base, "aiserver.v1.BidiService/BidiAppend", appendBody);
 
     const requestId = root.lookupType("aiserver.v1.BidiRequestId");
-    const response = await fetch(`${base}/agent.v1.AgentService/RunSSE`, {
-      method: "POST",
-      headers: { "content-type": "application/connect+proto" },
-      body: requestId.encode(requestId.fromObject({ request_id: "run-2" })).finish(),
-    });
+    const response = await stream(
+      base,
+      "agent.v1.AgentService/RunSSE",
+      requestId.encode(requestId.fromObject({ request_id: "run-2" })).finish(),
+    );
 
     const { frames } = await readFrames(root, response);
     const text = frames
@@ -404,11 +393,7 @@ describe("agent turn", { skip }, () => {
       }),
     ).finish();
 
-    const response = await fetch(`${base}/agent.v1.AgentService/UploadConversationBlobs`, {
-      method: "POST",
-      headers: { "content-type": "application/proto" },
-      body,
-    });
+    const response = await unary(base, "agent.v1.AgentService/UploadConversationBlobs", body);
 
     assert.equal(response.status, 200);
     assert.deepEqual(readBlobJson(blob.id), { role: "user", content: "uploaded" });
@@ -418,10 +403,7 @@ describe("agent turn", { skip }, () => {
     // NameAgent exists in Cursor's schema, so it gets a valid empty message
     // rather than an error: the client should not see a failure for a call we
     // simply have nothing to say about.
-    const response = await fetch(`${base}/agent.v1.AgentService/NameAgent`, {
-      method: "POST",
-      body: "",
-    });
+    const response = await unary(base, "agent.v1.AgentService/NameAgent", Buffer.alloc(0));
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/proto");
