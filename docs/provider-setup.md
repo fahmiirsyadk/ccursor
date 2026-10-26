@@ -171,7 +171,8 @@ Your model ids should appear in `modelNames`.
 
 ## Tool calling
 
-Agent mode depends on the model supporting tool calls. If the model streams text
-but never invokes a tool, check the provider's capability metadata — the adapter
-only offers tools the model advertises. Models without tool support work in chat
-mode but cannot drive the agent loop.
+Agent mode depends on the model supporting tool calls. The full catalog is offered
+to every model, since there is no reliable way to ask a provider whether it supports
+them. If a model streams text but never invokes a tool, that model does not do tool
+calling: it works in chat mode but cannot drive the agent loop. Choose a model that
+does.

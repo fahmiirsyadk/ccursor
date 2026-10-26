@@ -192,6 +192,11 @@ cursor-byok revert          # restore baselines, restart Cursor
 rm -rf ~/.cursor-byok-patch # drop all local state
 ```
 
-`revert` needs a baseline, which is captured before the first write. If you applied
-the patch before this tool existed, use `cursor-byok update` to extract a fresh tree
-instead — that path always starts from pristine files.
+`revert` puts back the workbench bundles, removes the router from both extension
+hosts, and re-enables the extension hash check. It needs a baseline, which is
+captured before the first write; without one it says so and leaves that file alone.
+
+Two things it does not touch: `cursor.general.disableHttp2` in `settings.json` (a
+normal setting, harmless to keep) and the models it seeded into `state.vscdb`. If
+you want a tree that was never patched at all, use `cursor-byok update` to extract a
+fresh one instead — that path always starts from pristine files.

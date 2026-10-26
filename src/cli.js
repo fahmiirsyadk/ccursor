@@ -34,6 +34,7 @@ import { saveBasePrompt } from "./prompt/base.js";
 import {
   DEFAULT_PORT,
   FOREIGN_HOOK,
+  ROUTED_EXTENSIONS,
   defaultInstallDir,
   providersFile,
   routesFile,
@@ -185,6 +186,12 @@ export async function cmdApply(args = {}) {
   // Narrow the extension hash check: drop only the extensions we modify, and undo
   // any broad `if(!1)` a previous installer left behind.
   try {
+    // A baseline first, so `revert` can put this file back. Without one, reverting
+    // the bundles would leave the router's hosts permanently exempt from Cursor's
+    // own verification.
+    const hostProcess = extensionHost.hostProcessPath(appRoot);
+    if (!args.dryRun && fs.existsSync(hostProcess)) state.captureBaseline(hostProcess);
+
     const verification = extensionHost.patchVerification(appRoot);
     if (verification.exempted.length > 0) {
       ok(`extension verification: exempted ${verification.exempted.join(", ")}`);
@@ -380,6 +387,8 @@ export function cmdRevert() {
   if (!found) return 1;
 
   const { appRoot } = found;
+
+  // Put the workbench bundles back first: they are what carries the guard patches.
   let restored = 0;
   for (const file of bundles.bundlePaths(appRoot)) {
     if (state.restoreBaseline(file)) {
@@ -390,13 +399,39 @@ export function cmdRevert() {
     }
   }
 
-  if (restored) {
+  // Then take the router out of the extension hosts. Leaving it behind would point
+  // Cursor at a port nothing answers, so every turn would fail instead of falling
+  // back to Cursor's own backend.
+  let unpatched = 0;
+  for (const entry of ROUTED_EXTENSIONS) {
+    try {
+      if (inject.removeFrom(appRoot, entry)) {
+        ok(`router removed from ${entry.label}`);
+        unpatched += 1;
+      }
+    } catch (error) {
+      warn(`${entry.label}: router not removed: ${error.message}`);
+    }
+  }
+
+  // And restore the extension hash check, so those two extensions are verified again.
+  const hostProcess = extensionHost.hostProcessPath(appRoot);
+  if (state.restoreBaseline(hostProcess)) {
+    ok(`restored ${path.basename(hostProcess)}`);
+    unpatched += 1;
+  }
+
+  if (restored || unpatched) {
     settings.refreshChecksums(appRoot, bundles.bundlePaths(appRoot));
     // Baselines are kept: a later apply must capture from them, not from whatever
     // the previous patch left behind.
   }
 
   heading("result");
+  if (!restored && !unpatched) {
+    warn("nothing to revert: no baselines and no router found");
+    return 0;
+  }
   ok("reverted — restart Cursor");
   return 0;
 }

@@ -58,7 +58,8 @@ installed app; the rest of the prompt is what the client sends with the request.
 - `settings.json`, to force HTTP/1.1
 - `state.vscdb`, to seed your models into the picker
 
-Each write is preceded by a snapshot, and `revert` restores the pristine baseline.
+Each write is preceded by a snapshot, and `revert` restores the pristine baseline,
+removes the router from the extension hosts, and re-enables the hash check.
 
 ## Trust model
 
@@ -71,7 +72,8 @@ Each write is preceded by a snapshot, and `revert` restores the pristine baselin
 - Patches are structural and validated. When the expected code shape is absent, the
   tool writes nothing and tells you, instead of guessing.
 - Every write is preceded by a snapshot, and `revert` restores the pristine
-  baseline captured before the first write.
+  baseline captured before the first write, including the extension-host file whose
+  hash check we narrow.
 
 ## Data handling
 

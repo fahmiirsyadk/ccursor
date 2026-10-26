@@ -179,6 +179,30 @@ describe("injection", () => {
     assert.equal(fs.readFileSync(file, "utf8"), before);
   });
 
+  it("removes the router from every host, so revert can undo the injection", () => {
+    // `revert` restores the workbench bundles and then calls this for each host.
+    // A host left behind would point Cursor at a port nothing answers, which fails
+    // every turn instead of falling back to Cursor's own backend.
+    const appRoot = makeApp();
+    const before = ROUTED_EXTENSIONS.map((entry) =>
+      fs.readFileSync(path.join(appRoot, entry.file), "utf8"),
+    );
+
+    inject.injectAll(appRoot, routesPath);
+    for (const entry of ROUTED_EXTENSIONS) {
+      assert.equal(inject.removeFrom(appRoot, entry), true, `${entry.label} had a router`);
+    }
+
+    ROUTED_EXTENSIONS.forEach((entry, index) => {
+      assert.equal(fs.readFileSync(path.join(appRoot, entry.file), "utf8"), before[index]);
+    });
+
+    // Nothing left to remove.
+    for (const entry of ROUTED_EXTENSIONS) {
+      assert.equal(inject.removeFrom(appRoot, entry), false);
+    }
+  });
+
   it("produces a bundle that still parses", () => {
     const appRoot = makeApp();
     inject.injectAll(appRoot, routesPath);

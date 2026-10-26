@@ -217,7 +217,7 @@ there from the first turn.
 | `apply` | Patch the install, cache the schema and prompt, seed the catalog. Idempotent. `--dry-run` previews. |
 | `status` | Show what is in effect, plus a live server check. |
 | `doctor` | Explain what is broken and print the fix. |
-| `revert` | Restore the bundles Cursor shipped with. |
+| `revert` | Restore the bundles Cursor shipped with, remove the router, and re-enable the extension hash check. |
 | `run` | Re-apply if needed, seed, start the server, launch Cursor. |
 | `serve` | Run the server in the foreground (`--port`, `--app`). |
 | `stop` | Stop the background server (`--force` even while Cursor runs). |
@@ -281,7 +281,11 @@ hash check narrowed to the two files we touch, and one settings flag.
 What protects you:
 
 - **A baseline is captured before the first write**, and a timestamped snapshot
-  before every write. `cursor-byok revert` restores the pristine files.
+  before every write. `cursor-byok revert` restores the workbench bundles, removes
+  the router from both extension hosts, and re-enables the extension hash check, so
+  the install goes back to what Cursor shipped. One thing it leaves alone is
+  `cursor.general.disableHttp2` in `settings.json`, which is a normal setting and
+  harmless to keep.
 - **Patches are validated.** Each one anchors on surrounding code, checks the span
   it is about to rewrite, and refuses to write when the shape does not match. It
   reports the problem instead of guessing.

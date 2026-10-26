@@ -179,45 +179,52 @@ makes ripgrep parse `**/*.md` as a regular expression, which fails. ripgrep also
 refuses an empty pattern, so the call is retried once with `pattern: "."` — the same
 fallback Cursor's own implementation uses.
 
-Real trace from a porting task:
+Real log excerpt from one turn in this repository:
 
 ```text
-[AGENT] built prompt {"promptProvider":"openai-chat","promptStyle":"openai-main"}
-[AGENT] → [openai-chat/deepseek/deepseek-v4.1-flash-1017] "port to Node.js" (3 msgs)
-[LLM] stream done (0t/0c in 17840ms, stop=tool_use)
-[AGENT] tool results pending provider-state flush {"round":0,"toolResults":[...]}
-[AGENT] continuing LLM with tool results {"round":1,"messages":7}
-[LLM] stream done (0t/0c in 12031ms, stop=tool_use)
-[AGENT] continuing LLM with tool results {"round":2,"messages":10}
-...
-[LLM] stream done (0t/2308c in 16239ms, stop=end_turn)
+[>] RunSSE 3f9a1c22 started
+    workspace: /home/void/dev/ccursor
+    system message: 8499 chars (user_info 185, Cursor prompt 8312, request 2)
+    tool Glob [main] {"glob_pattern":"*.md","target_directory":"/home/void/dev/ccursor"}
+    BidiAppend 3f9a1c22 seq=1 exec_client_message
+    turn done: Glob, 402 chars, 3482in/169out
 ```
+
+Three things are worth reading off it. `system message` splits the prompt into its
+three parts, so a request that carries `AGENTS.md` shows up as a large `request`
+number instead of being invisible. `tool Glob` is the call the UI renders; the exec
+arguments underneath it are different, which is the paragraph above. `turn done`
+reports the tools used, the answer size and the token counts.
 
 `messages` grows by the number of turns each round adds. The loop ends when the
 model stops asking for tools — not when the server decides.
 
 ### What tools the model sees
 
-The adapter assembles the catalog per round:
+The catalog is small and fixed. `src/agent/tools.js` is the only place it is
+defined; the loop reads it per round, so adding a tool is one entry:
 
 ```text
-[DYNAMIC-TOOLS] builtin profile resolved {"profile":"final","cursorDynamicToolCount":11,...}
-[AGENT] prepared provider conversation {"builtinsCount":22,"runtimeToolsCount":9,"mcpToolsCount":...}
-[DYNAMIC-TOOLS] MCP mode resolved {"mcpMode":"dynamic_namespace",
-  "namespaces":[{"name":"cursor-origin","tools":33},{"name":"cursor-ide-browser","tools":16}]}
+Read  Write  Edit  Delete  Shell  Grep  Glob  Task
 ```
 
-So a turn can offer ~22 built-in Cursor tools, plus runtime tools, plus MCP tools
-exposed through namespaces. That is a lot of surface, and it is why long agent runs
-degrade: the model has many plausible next actions and no built-in stopping point.
+That is deliberately much smaller than what Cursor offers its own models. Cursor's
+own agent gets a dynamic catalog — built-ins plus runtime tools plus MCP servers
+exposed through namespaces, around twenty-two entries and growing. Reproducing that
+means reproducing its ranking and its budget, which is where long agent runs go
+wrong. Eight tools with short descriptions give the model fewer plausible next
+actions and a clearer stopping point.
 
-Tool names as they reach the model are provider-agnostic (`Write`, `Read`, `Shell`,
-`Glob`, `Grep`, `Task`, `AwaitShell`, `ListMcpResources`, ...). Cursor stores the
-result under its own internal name, which is what you see in the transcript:
+The names are provider-agnostic; Cursor stores each result under its own internal
+name, which is what you see in the transcript:
 
 ```text
 run_terminal_command_v2 · read_file_v2 · glob_file_search · edit_file_v2
 ```
+
+A subagent gets a subset. `explore` is read-only (`Read`, `Grep`, `Glob`), while
+`debug` and `bash` also get write and shell access. `Task` is never offered to a
+subagent, so it cannot re-delegate the same work one level deeper.
 
 ### Why tool results are not validated
 

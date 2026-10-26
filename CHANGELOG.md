@@ -22,6 +22,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`revert` did not revert.** It restored the workbench bundles and stopped there,
+  leaving the router injected in both extension hosts and their entries missing from
+  Cursor's expected-hash table. The router then pointed at a port nothing answered,
+  so every turn failed instead of falling back to Cursor's own backend. `revert` now
+  removes the router and restores the extension-host file too, which `apply` now
+  captures a baseline for.
 - **Glob was sent as a regular expression.** Cursor has a `globToolCall` but no glob
   exec: a Glob runs as a Grep with the glob as a filter and an empty pattern.
   Putting `**/*.md` in `pattern` made ripgrep reject it with a parse error. The call

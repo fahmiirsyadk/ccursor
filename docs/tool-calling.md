@@ -63,8 +63,9 @@ run:
 final round: 1488 events, 64s, then two files batched into one call
 ```
 
-The built-in `Write` description never says "one file per call" — it only warns
-about overwriting and about creating documentation files unprompted.
+The `Write` description says "write a file, replacing it if it exists" — it does not
+say one file per call, and it cannot: the model is allowed to write several files in
+a turn, it just has to do it with several calls.
 
 **Mitigation**
 
@@ -125,6 +126,7 @@ Bound the prompt explicitly. Measured effect on the same repository:
 
 ## Chat works but agent mode does not
 
-Check the provider's capability metadata. The adapter only offers tools the model
-advertises; a model without tool-call support answers in chat mode but cannot drive
-the agent loop. `docs/provider-setup.md` covers the fields.
+The full tool catalog is offered to every model, because there is no reliable way to
+ask a provider whether it supports tool calls. If a model streams text but never
+invokes a tool, the model itself does not do tool calling — pick one that does.
+`docs/provider-setup.md` covers the fields.
