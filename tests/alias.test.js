@@ -22,7 +22,7 @@ const savedHome = process.env.HOME;
 
 function withProviders(payload, name) {
   const home = path.join(tmpRoot, name);
-  const dir = path.join(home, ".ccursor");
+  const dir = path.join(home, ".cursor-byok-patch");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "providers.json");
   fs.writeFileSync(file, JSON.stringify(payload, null, 2));

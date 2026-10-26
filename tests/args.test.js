@@ -32,9 +32,8 @@ describe("parseArgs", () => {
   });
 
   it("parses boolean flags for other commands", () => {
-    const args = parseArgs(["apply", "--dry-run", "--skip-installer", "--skip-seed"]);
+    const args = parseArgs(["apply", "--dry-run", "--skip-seed"]);
     assert.equal(args.dryRun, true);
-    assert.equal(args.skipInstaller, true);
     assert.equal(args.skipSeed, true);
   });
 

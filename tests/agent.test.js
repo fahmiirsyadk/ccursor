@@ -29,13 +29,6 @@ after(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-function extensionJs() {
-  const found = discover();
-  if (!found.appRoot) return null;
-  const file = path.join(found.appRoot, "extensions", "cursor2plus", "dist", "extension.js");
-  return fs.existsSync(file) ? file : null;
-}
-
 /** Path to the workbench bundle, the primary schema source. */
 function workbenchBundle() {
   const found = discover();
@@ -44,8 +37,10 @@ function workbenchBundle() {
   return fs.existsSync(file) ? file : null;
 }
 
-const bundle = extensionJs();
-const skip = bundle ? false : "no Cursor install with the BYOK extension on this machine";
+// Resolved once, before any test overrides HOME: discovery reads it.
+const WORKBENCH = workbenchBundle();
+
+const skip = WORKBENCH ? false : "no Cursor install on this machine";
 
 describe("blob store", () => {
   it("round-trips a value through the content address", () => {
@@ -277,13 +272,14 @@ describe("agent turn", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
+    root = loadRoot({ workbench: WORKBENCH });
     stub = await startStubProvider([textChunk("Hello"), textChunk(" there"), doneChunk()]);
 
     const home = path.join(tmpRoot, "home");
-    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    const state = path.join(tmpRoot, "state");
+    fs.mkdirSync(state, { recursive: true });
     fs.writeFileSync(
-      path.join(home, ".ccursor", "providers.json"),
+      path.join(state, "providers.json"),
       JSON.stringify({
         providers: [
           {
@@ -299,10 +295,10 @@ describe("agent turn", { skip }, () => {
     );
 
     process.env.HOME = home;
-    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state");
+    process.env.CURSOR_BYOK_STATE = state;
 
     const { createServer } = await import("../src/server.js");
-    instance = createServer({ extensionJs: bundle, port: 0 });
+    instance = createServer({ workbench: WORKBENCH, port: 0 });
     const address = await instance.listen();
     base = `http://127.0.0.1:${address.port}`;
   });
@@ -348,7 +344,12 @@ describe("agent turn", { skip }, () => {
     // The provider received what we think it did.
     assert.equal(stub.lastRequest.model, "stub-model");
     assert.equal(stub.lastRequest.messages.at(-1).content, "hello");
-    assert.equal(stub.lastRequest.messages[0].role, "system");
+    // No system message: this request carries no instructions, and inventing one
+    // would describe an IDE this project is not.
+    assert.equal(
+      stub.lastRequest.messages.some((message) => message.role === "system"),
+      false,
+    );
   });
 
   it("explains itself when the model is not configured", async () => {
@@ -538,5 +539,126 @@ describe("images", () => {
     assert.ok(Array.isArray(first.content));
     assert.equal(first.content[0].text, "earlier");
     assert.equal(first.content[1].type, "image");
+  });
+});
+
+describe("heartbeat while a tool runs", () => {
+  it("reports idle rather than blocking, so the caller can send a beat", async () => {
+    const { clearSessions, openSession } = await import("../src/agent/session.js");
+    const { nextExecReply } = await import("../src/agent/exec.js");
+
+    clearSessions();
+    openSession("hb-1");
+
+    // Nothing arrives: the wait must come back as idle, not hang.
+    const step = await nextExecReply("hb-1", 1, 20);
+    assert.equal(step.kind, "idle");
+  });
+
+  it("reports a closed session separately from a quiet one", async () => {
+    const { clearSessions, openSession, closeSession } = await import("../src/agent/session.js");
+    const { nextExecReply } = await import("../src/agent/exec.js");
+
+    clearSessions();
+    openSession("hb-2");
+    closeSession("hb-2");
+
+    const step = await nextExecReply("hb-2", 1, 20);
+    assert.equal(step.kind, "closed");
+  });
+
+  it("returns the reply when it matches the exec id", async () => {
+    const { clearSessions, openSession, deliver } = await import("../src/agent/session.js");
+    const { nextExecReply } = await import("../src/agent/exec.js");
+
+    clearSessions();
+    openSession("hb-3");
+
+    const waiting = nextExecReply("hb-3", 7, 500);
+    deliver("hb-3", { exec_client_message: { id: 7, read_result: { success: { content: "ok" } } } });
+
+    const step = await waiting;
+    assert.equal(step.kind, "message");
+    assert.equal(step.value.id, 7);
+  });
+
+  it("ignores a reply for a different exec id", async () => {
+    const { clearSessions, openSession, deliver } = await import("../src/agent/session.js");
+    const { nextExecReply } = await import("../src/agent/exec.js");
+
+    clearSessions();
+    openSession("hb-4");
+
+    const waiting = nextExecReply("hb-4", 7, 60);
+    deliver("hb-4", { exec_client_message: { id: 9, read_result: {} } });
+
+    const step = await waiting;
+    assert.equal(step.kind, "idle");
+  });
+});
+
+describe("provider failures reach the user", () => {
+  it("turns an error event inside a 200 stream into a message", async () => {
+    const { streamOpenAi } = await import("../src/agent/provider.js");
+    const http = await import("node:http");
+
+    // A gateway that answers 200 and then reports the failure in the stream.
+    const stub = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ error: { message: "capacity_exhausted" } })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      });
+    });
+    await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const events = streamOpenAi({
+        provider: { id: "stub", name: "Stub", type: "openai-chat", baseUrl: `http://127.0.0.1:${stub.address().port}/v1` },
+        apiModel: "m",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      await assert.rejects(
+        (async () => {
+          for await (const event of events) void event;
+        })(),
+        /capacity_exhausted/,
+      );
+    } finally {
+      await new Promise((resolve) => stub.close(resolve));
+    }
+  });
+
+  it("treats a stream that produced nothing as a failure", async () => {
+    const { streamOpenAi } = await import("../src/agent/provider.js");
+    const http = await import("node:http");
+
+    const stub = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end("data: [DONE]\n\n");
+      });
+    });
+    await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const events = streamOpenAi({
+        provider: { id: "stub", name: "Stub", type: "openai-chat", baseUrl: `http://127.0.0.1:${stub.address().port}/v1` },
+        apiModel: "m",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      await assert.rejects(
+        (async () => {
+          for await (const event of events) void event;
+        })(),
+        /empty response/,
+      );
+    } finally {
+      await new Promise((resolve) => stub.close(resolve));
+    }
   });
 });

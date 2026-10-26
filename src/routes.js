@@ -6,7 +6,7 @@
  * added in a Cursor release is diverted automatically instead of silently reaching
  * Cursor's backend.
  *
- * The list is written to `~/.ccursor/routes.json`, which the injected router reads,
+ * The list is written next to the server's other state, and the injected router reads
  * so the router itself needs no knowledge of service names.
  */
 
@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { loadRoot } from "./proto/schema.js";
-import { DEFAULT_PORT, ccursorDir, readJson, writeJson } from "./paths.js";
+import { DEFAULT_PORT, readJson, routesFile, writeJson } from "./paths.js";
 import { SINK_HOSTS } from "./local/telemetry.js";
 
 /** Namespaces the local server answers in full. */
@@ -75,7 +75,7 @@ export function buildRoutes(root) {
 
 /** Path of the routes file the router reads. */
 export function routesPath() {
-  return path.join(ccursorDir(), "routes.json");
+  return routesFile();
 }
 
 /**

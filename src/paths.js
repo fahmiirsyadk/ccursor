@@ -15,8 +15,17 @@ export const DEFAULT_PORT = 39831;
 /** Workbench bundles we patch, in order. */
 export const BUNDLES = ["workbench.desktop.main.js", "workbench.glass.main.js"];
 
-/** Sentinel written by the ccursor installer when it injects the hook. */
-export const HOOK_MARKER = "CURSOR-BYOK-HOOK-START";
+/**
+ * A renderer hook an earlier installer wrote into the workbench bundle.
+ *
+ * Nothing here needs it: it queues events to a collector and draws its own status
+ * badge. `apply` removes the block, so a bundle that installer touched comes back to
+ * Cursor's own code plus the two guards we patch.
+ */
+export const FOREIGN_HOOK = {
+  start: "/* CURSOR-BYOK-HOOK-START */",
+  end: "/* CURSOR-BYOK-HOOK-END */",
+};
 
 /**
  * Marker our injector writes into the extension hosts.
@@ -66,10 +75,12 @@ export const backupDir = () => path.join(stateDir(), "backups");
 export const markerFile = () => path.join(stateDir(), "applied.json");
 export const catalogCache = () => path.join(stateDir(), "catalog.json");
 
-/** Configuration owned by the upstream @cometix/ccursor extension. */
-export const ccursorDir = () => path.join(home(), ".ccursor");
-export const routesFile = () => path.join(ccursorDir(), "routes.json");
-export const providersFile = () => path.join(ccursorDir(), "providers.json");
+/** Configuration lives in our own state directory. */
+export const routesFile = () => path.join(stateDir(), "routes.json");
+export const providersFile = () => path.join(stateDir(), "providers.json");
+
+/** Cursor's own agent prompt, extracted from the installed app by `apply`. */
+export const promptFile = () => path.join(stateDir(), "prompt.txt");
 
 /** Cursor's own settings and persisted renderer state. */
 export const settingsFile = () =>

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * Dump the protobuf schemas Cursor ships inside its BYOK extension.
+ * Dump the protobuf schema Cursor's own client carries.
  *
- * The schemas are read from the installed app, so nothing is vendored here and the
- * output always matches the Cursor version on disk.
+ * The client's generated code is the schema it encodes and decodes with, so this
+ * reads it straight out of the workbench bundle. Nothing is vendored and nothing
+ * comes from a third-party extension, so the output always matches the Cursor
+ * version on disk.
  *
  * Usage:
- *   node tools/extract-schema.js                     list files and services
+ *   node tools/extract-schema.js                     list namespaces and services
  *   node tools/extract-schema.js --message AgentRunRequest
  *   node tools/extract-schema.js --out schema.json
  */
@@ -16,8 +18,7 @@ import path from "node:path";
 import protobuf from "protobufjs";
 
 import { discover } from "../src/locate.js";
-import { readDescriptors } from "../src/proto/descriptor.js";
-import { loadRoot, lookupType } from "../src/proto/schema.js";
+import { readClientSchema } from "../src/proto/client-schema.js";
 
 function arg(name, fallback) {
   const at = process.argv.indexOf(`--${name}`);
@@ -30,24 +31,21 @@ if (!appRoot) {
   process.exit(1);
 }
 
-const extensionJs = path.join(appRoot, "extensions", "cursor2plus", "dist", "extension.js");
-if (!fs.existsSync(extensionJs)) {
-  console.error(`BYOK extension not installed at ${extensionJs}`);
-  console.error("Run 'cursor-byok apply' first, or pass --app.");
+const workbench = path.join(appRoot, "out/vs/workbench/workbench.desktop.main.js");
+if (!fs.existsSync(workbench)) {
+  console.error(`Cursor's client bundle not found at ${workbench}`);
   process.exit(1);
 }
 
-const descriptors = readDescriptors(extensionJs);
+const { json, stats } = readClientSchema(workbench);
 
 const only = arg("message");
 if (only) {
-  const root = loadRoot(extensionJs);
-
-  // Collect every fully-qualified type name, then match on the last segment.
-  const allTypes = [];
+  const root = protobuf.Root.fromJSON(json);
+  const names = [];
   const walk = (namespace) => {
     for (const nested of namespace.nestedArray ?? []) {
-      if (nested instanceof protobuf.Type) allTypes.push(nested.fullName.slice(1));
+      if (nested.fields) names.push(nested.fullName.replace(/^\./, ""));
       walk(nested);
     }
   };
@@ -55,14 +53,14 @@ if (only) {
 
   const name = only.includes(".")
     ? only
-    : allTypes.find((full) => full.split(".").pop() === only);
+    : names.find((full) => full.split(".").pop() === only);
 
   if (!name) {
     console.error(`message not found: ${only}`);
     process.exit(1);
   }
 
-  const type = lookupType(root, name);
+  const type = root.lookupType(name);
   console.log(`message ${name}`);
   for (const [fieldName, field] of Object.entries(type.fields)) {
     const kind = field.resolvedType ? field.resolvedType.name : field.type;
@@ -75,19 +73,16 @@ if (only) {
 
 const out = arg("out");
 if (out) {
-  const root = loadRoot(extensionJs);
-  const json = root.toJSON();
-  fs.writeFileSync(out, JSON.stringify(json, null, 2) + "\n");
+  fs.writeFileSync(out, `${JSON.stringify(json)}\n`);
   console.log(`wrote ${out}`);
 }
 
-let totalTypes = 0;
-for (const d of descriptors) {
-  const types = d.file.messageType.length;
-  totalTypes += types;
-  const services = d.file.service?.length ?? 0;
-  console.log(
-    `${d.file.package.padEnd(16)} ${String(d.file.name).padEnd(30)} ${String(types).padStart(5)} top-level  ${services} services`,
-  );
+for (const [pkg, namespace] of Object.entries(json.nested ?? {})) {
+  const services = Object.values(namespace.nested ?? {}).filter((entry) => entry.methods);
+  console.log(`${pkg.padEnd(12)} ${String(services.length).padStart(3)} services`);
 }
-console.log(`${descriptors.length} files, ${totalTypes} top-level messages`);
+
+console.log(
+  `${stats.messages} messages, ${stats.enums} enums, ${stats.services} services, ` +
+    `${stats.methods} methods`,
+);

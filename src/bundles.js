@@ -30,7 +30,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { BUNDLES } from "./paths.js";
+import { BUNDLES, FOREIGN_HOOK } from "./paths.js";
 
 // --- patch 1 anchors -------------------------------------------------------
 
@@ -129,12 +129,37 @@ export function patchAdminPolicy(input) {
 }
 
 /**
+ * Remove a renderer hook written by an earlier installer.
+ *
+ * The block is self-contained and sits at the top of the bundle, so removing it
+ * leaves valid code behind. A malformed block — a start with no end — is left alone
+ * rather than truncating the bundle.
+ *
+ * @param {string} data bundle contents
+ * @returns {string}
+ */
+export function stripForeignHook(data) {
+  let out = data;
+
+  for (;;) {
+    const start = out.indexOf(FOREIGN_HOOK.start);
+    if (start < 0) return out;
+
+    const end = out.indexOf(FOREIGN_HOOK.end, start);
+    if (end < 0) return out;
+
+    out = out.slice(0, start) + out.slice(end + FOREIGN_HOOK.end.length);
+  }
+}
+
+/**
  * Apply both patches to one bundle, writing only when something changed.
  *
- * @returns {{path: string, subscription: string, adminPolicy: string, changed: boolean}}
+ * @returns {{path: string, subscription: string, adminPolicy: string, foreignHook: boolean, changed: boolean}}
  */
 export function patchBundle(file) {
-  const data = fs.readFileSync(file, "utf8");
+  const original = fs.readFileSync(file, "utf8");
+  const data = stripForeignHook(original);
 
   let patched;
   let subState;
@@ -157,13 +182,14 @@ export function patchBundle(file) {
     );
   }
 
-  const changed = patched !== data;
+  const changed = patched !== original;
   if (changed) fs.writeFileSync(file, patched);
 
   return {
     path: file,
     subscription: subState,
     adminPolicy: adminState,
+    foreignHook: data !== original,
     changed,
   };
 }

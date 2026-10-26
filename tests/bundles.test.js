@@ -127,3 +127,43 @@ describe("patchBundle", () => {
     assert.deepEqual(found, ["workbench.desktop.main.js", "workbench.glass.main.js"]);
   });
 });
+
+describe("a hook an earlier installer left behind", () => {
+  const start = "/* CURSOR-BYOK-HOOK-START */";
+  const end = "/* CURSOR-BYOK-HOOK-END */";
+
+  it("is removed from the bundle", () => {
+    assert.equal(bundles.stripForeignHook(`before${start}BODY${end};after`), "before;after");
+    assert.equal(bundles.stripForeignHook("nothing here"), "nothing here");
+  });
+
+  it("is removed more than once, if it was injected twice", () => {
+    assert.equal(bundles.stripForeignHook(`${start}A${end}${start}B${end}z`), "z");
+  });
+
+  it("is left alone when the block never closes", () => {
+    // Truncating at an unclosed marker would destroy the bundle.
+    const broken = `before${start}unterminated`;
+    assert.equal(bundles.stripForeignHook(broken), broken);
+  });
+
+  it("is stripped and reported by patchBundle", () => {
+    const target = path.join(tmpRoot, "hooked.desktop.main.js");
+    fs.writeFileSync(target, `${start}(function(){})()${end};${makeBundle()}`);
+
+    const outcome = bundles.patchBundle(target);
+    assert.equal(outcome.foreignHook, true);
+
+    const written = fs.readFileSync(target, "utf8");
+    assert.equal(written.includes(start), false);
+    assert.equal(written.includes(end), false);
+    assert.equal(bundles.subscriptionPatched(written), true);
+  });
+
+  it("reports no hook on a clean bundle", () => {
+    const target = path.join(tmpRoot, "clean.desktop.main.js");
+    fs.writeFileSync(target, makeBundle());
+
+    assert.equal(bundles.patchBundle(target).foreignHook, false);
+  });
+});

@@ -10,7 +10,7 @@
  * asking. The loop lives here because the conversation state lives here.
  */
 
-import { conversation, imagesFrom, modelId, subagentType } from "./request.js";
+import { conversation, imagesFrom, modelId, subagentType, workspacePaths } from "./request.js";
 import {
   annotate,
   corruptNote,
@@ -22,10 +22,13 @@ import {
 } from "./vision.js";
 import { readAll as ocrText } from "./ocr.js";
 import { withImageFallback } from "./provider.js";
-import { systemPrompt } from "./prompt.js";
+import { withSystemPrompt } from "./prompt.js";
+import { basePrompt } from "../prompt/base.js";
+import { appRootFromWorkbench } from "../prompt/bundle.js";
+import { userInfo } from "../prompt/user-info.js";
 import { resolveModel, stream } from "./provider.js";
 import { EXEC_CASES, TOOL_TYPES, findTool, providerTools, renderResult, toToolResult } from "./tools.js";
-import { execServerMessage, toolCallCompleted, toolCallStarted, waitForExec } from "./exec.js";
+import { execServerMessage, nextExecReply, toolCallCompleted, toolCallStarted } from "./exec.js";
 import { detail, info, warn } from "../ui.js";
 import {
   heartbeat,
@@ -112,10 +115,19 @@ async function* execOnce({ root, requestId, execId, execCase, execName, value })
   yield execServerMessage(root, { id: execId, execId: execName, caseName: execCase, value });
 
   for (;;) {
-    const reply = await waitForExec(requestId, execId);
-    if (!reply) return null;
+    const step = await nextExecReply(requestId, execId, HEARTBEAT_MS);
 
-    const outcome = execOutcome(reply);
+    if (step.kind === "closed") return null;
+
+    if (step.kind === "idle") {
+      // Keep the stream alive while the editor works. Without this, a Shell command
+      // that takes longer than Cursor's 30-second stall window kills the whole turn
+      // with "Connection stalled repeatedly".
+      yield heartbeat(root);
+      continue;
+    }
+
+    const outcome = execOutcome(step.value);
     if (!outcome) continue;
     if (outcome.case.endsWith("_stream")) continue;
     return outcome.value;
@@ -240,7 +252,7 @@ async function* runTool({ root, requestId, allocateExecId, tool, input, callId, 
   yield toolCallStarted(root, { callId, toolType, args, modelCallId });
 
   const execArgs = tool.buildArgs(input, callId, context);
-  const result =
+  let result =
     tool.name === "Edit"
       ? yield* editViaReadWrite({ root, requestId, allocateExecId, args: execArgs, callId })
       : yield* execOnce({
@@ -251,6 +263,21 @@ async function* runTool({ root, requestId, allocateExecId, tool, input, callId, 
           execName: `${callId}-${tool.name.toLowerCase()}`,
           value: execArgs,
         });
+
+  // Some calls are rejected in a way the model cannot fix from the error text alone,
+  // and the correction is known here. A tool declares it; Glob uses it because
+  // ripgrep refuses a search with no pattern.
+  const corrected = result && tool.retry ? tool.retry(execArgs, result) : null;
+  if (corrected) {
+    result = yield* execOnce({
+      root,
+      requestId,
+      execId: allocateExecId(),
+      execCase: EXEC_CASES[tool.name],
+      execName: `${callId}-${tool.name.toLowerCase()}-retry`,
+      value: corrected,
+    });
+  }
 
   if (!result) {
     return { text: "Error: the editor did not answer this tool call.", result: null };
@@ -274,7 +301,7 @@ async function* runTool({ root, requestId, allocateExecId, tool, input, callId, 
  * @param {AbortSignal} [options.signal]
  * @returns {AsyncGenerator<Buffer>}
  */
-export async function* runTurn({ root, request, providers, requestId, queued, signal }) {
+export async function* runTurn({ root, request, providers, requestId, queued, signal, workbench }) {
   const requested = modelId(request);
   const resolved = resolveModel(providers, requested);
 
@@ -282,7 +309,7 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     yield textDelta(
       root,
       `No provider is configured for \`${requested || "the requested model"}\`. ` +
-        "Add it to `~/.ccursor/providers.json` and reopen the model picker.",
+        "Add it to `providers.json` in the state directory and reopen the model picker.",
     );
     yield turnEnded(root, {});
     return;
@@ -293,6 +320,9 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
   // A subagent is a run in its own right, with its own RunSSE. It must not be given
   // the Task tool: it would re-delegate the same work one level deeper.
   const subagent = subagentType(request);
+  const roots = workspacePaths(request);
+  if (roots.length > 0) detail(`workspace: ${roots.join(", ")}`);
+  else warn("no workspace path in the request; file tools will not default to it");
 
   let turns = conversation(request, queued);
   const all = imagesFrom(request);
@@ -329,7 +359,29 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
     yield textDelta(root, droppedNotice(images, resolved.model.id, ocr.length));
   }
 
-  let messages = [{ role: "system", content: systemPrompt(request, subagent) }, ...turns];
+  // Cursor's own system message: its user_info block (workspace, OS, shell, date),
+  // then its agent prompt, then whatever instructions the request carries. Nothing
+  // here is written by this project.
+  const base = basePrompt();
+  let environment = "";
+  if (workbench) {
+    try {
+      environment = userInfo(request, { appRoot: appRootFromWorkbench(workbench) });
+    } catch (error) {
+      // A prompt block is not worth failing a turn over.
+      warn(`user_info not built: ${error.message}`);
+    }
+  }
+
+  let messages = withSystemPrompt(request, turns, { base, userInfo: environment });
+  const system = messages[0]?.role === "system" ? messages[0].content : "";
+  detail(
+    system.length === 0
+      ? "system message: none"
+      : `system message: ${system.length} chars ` +
+        `(user_info ${environment.length}, Cursor prompt ${base.length}, ` +
+        `request ${system.length - environment.length - base.length})`,
+  );
   const tools = providerTools({ subagent });
   if (subagent) {
     info(`subagent turn: ${subagent} (${tools.length} tools: ${tools.map((t) => t.name).join(", ")})`);
@@ -371,70 +423,87 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
       policy,
     });
 
-    for await (const event of withHeartbeat(events, root)) {
-      if (event.type === "heartbeat") {
-        yield event.frame;
-        continue;
-      }
+    // A provider failure is reported in the conversation rather than as a bare
+    // error toast: "out of capacity" is something the user can act on.
+    let providerError = null;
 
-      switch (event.type) {
-        case "thinking_delta":
-          if (thinkingStarted === 0) thinkingStarted = Date.now();
-          yield thinkingDelta(root, event.text);
-          break;
-
-        case "thinking_done":
-          if (thinkingStarted > 0) {
-            yield thinkingCompleted(root, Date.now() - thinkingStarted);
-            thinkingStarted = 0;
-          }
-          break;
-
-        case "text_delta":
-          if (thinkingStarted > 0) {
-            yield thinkingCompleted(root, Date.now() - thinkingStarted);
-            thinkingStarted = 0;
-          }
-          textChars += event.text.length;
-          textTotal += event.text.length;
-          sinceToken += event.text.length;
-          yield textDelta(root, event.text);
-          if (sinceToken >= TOKEN_EVERY_CHARS) {
-            sinceToken = 0;
-            yield tokenDelta(root, Math.round(textChars / 4));
-          }
-          break;
-
-        case "tool_use_start":
-          pending.set(event.id, { id: event.id, name: event.name, arguments: "" });
-          break;
-
-        case "tool_use_delta": {
-          const entry = pending.get(event.id);
-          if (entry) entry.arguments += event.input;
-          break;
+    try {
+      for await (const event of withHeartbeat(events, root)) {
+        if (event.type === "heartbeat") {
+          yield event.frame;
+          continue;
         }
 
-        case "tool_use_done": {
-          const entry = pending.get(event.id) ?? {
-            id: event.id,
-            name: event.name,
-            arguments: event.arguments ?? "",
-          };
-          entry.arguments = event.arguments ?? entry.arguments;
-          pending.delete(event.id);
-          calls.push(entry);
-          break;
+        switch (event.type) {
+          case "thinking_delta":
+            if (thinkingStarted === 0) thinkingStarted = Date.now();
+            yield thinkingDelta(root, event.text);
+            break;
+
+          case "thinking_done":
+            if (thinkingStarted > 0) {
+              yield thinkingCompleted(root, Date.now() - thinkingStarted);
+              thinkingStarted = 0;
+            }
+            break;
+
+          case "text_delta":
+            if (thinkingStarted > 0) {
+              yield thinkingCompleted(root, Date.now() - thinkingStarted);
+              thinkingStarted = 0;
+            }
+            textChars += event.text.length;
+            textTotal += event.text.length;
+            sinceToken += event.text.length;
+            yield textDelta(root, event.text);
+            if (sinceToken >= TOKEN_EVERY_CHARS) {
+              sinceToken = 0;
+              yield tokenDelta(root, Math.round(textChars / 4));
+            }
+            break;
+
+          case "tool_use_start":
+            pending.set(event.id, { id: event.id, name: event.name, arguments: "" });
+            break;
+
+          case "tool_use_delta": {
+            const entry = pending.get(event.id);
+            if (entry) entry.arguments += event.input;
+            break;
+          }
+
+          case "tool_use_done": {
+            const entry = pending.get(event.id) ?? {
+              id: event.id,
+              name: event.name,
+              arguments: event.arguments ?? "",
+            };
+            entry.arguments = event.arguments ?? entry.arguments;
+            pending.delete(event.id);
+            calls.push(entry);
+            break;
+          }
+
+          case "done":
+            Object.assign(usage, event.usage ?? {});
+            stopReason = event.stopReason ?? stopReason;
+            break;
+
+          default:
+            break;
         }
-
-        case "done":
-          Object.assign(usage, event.usage ?? {});
-          stopReason = event.stopReason ?? stopReason;
-          break;
-
-        default:
-          break;
       }
+    } catch (error) {
+      // The provider refused or failed. Say so in the conversation: a bare error
+      // toast loses the reason, and "out of capacity" is something to act on.
+      providerError = error;
+    }
+
+    if (providerError) {
+      warn(`provider failed: ${providerError.message}`);
+      yield textDelta(root, `The provider could not complete this turn.\n\n\`${providerError.message}\``);
+      yield turnEnded(root, usage);
+      return;
     }
 
     if (thinkingStarted > 0) yield thinkingCompleted(root, Date.now() - thinkingStarted);
@@ -496,7 +565,10 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
         continue;
       }
 
-      detail(`tool ${call.name} ${String(JSON.stringify(parseArguments(call.arguments))).slice(0, 120)}`);
+      detail(
+        `tool ${call.name} [${subagent || "main"}] ` +
+          String(JSON.stringify(parseArguments(call.arguments))).slice(0, 120),
+      );
       usedTools.push(call.name);
 
       const outcome = yield* runTool({
@@ -507,7 +579,11 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
         input: parseArguments(call.arguments),
         callId: call.id,
         modelCallId: `${requestId}-${round}-${call.id.slice(-4)}`,
-        context: { modelId: apiModel, conversationId: request?.conversation_id ?? "" },
+        context: {
+          modelId: apiModel,
+          conversationId: request?.conversation_id ?? "",
+          workspacePaths: roots,
+        },
       });
 
       messages.push({

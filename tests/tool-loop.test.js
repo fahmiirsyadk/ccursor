@@ -34,13 +34,6 @@ after(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-function extensionJs() {
-  const found = discover();
-  if (!found.appRoot) return null;
-  const file = path.join(found.appRoot, "extensions", "cursor2plus", "dist", "extension.js");
-  return fs.existsSync(file) ? file : null;
-}
-
 /** Path to the workbench bundle, the primary schema source. */
 function workbenchBundle() {
   const found = discover();
@@ -49,8 +42,10 @@ function workbenchBundle() {
   return fs.existsSync(file) ? file : null;
 }
 
-const bundle = extensionJs();
-const skip = bundle ? false : "no Cursor install with the BYOK extension on this machine";
+// Resolved once, before any test overrides HOME: discovery reads it.
+const WORKBENCH = workbenchBundle();
+
+const skip = WORKBENCH ? false : "no Cursor install on this machine";
 
 describe("tool catalog", () => {
   it("maps every tool to a Cursor tool type and an exec case", () => {
@@ -79,8 +74,43 @@ describe("tool catalog", () => {
   });
 
   it("turns a glob into a recursive pattern", () => {
-    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "*.ts" }, "c1").pattern, "**/*.ts");
-    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "**/*.ts" }, "c1").pattern, "**/*.ts");
+    const args = findTool("Glob").buildArgs({ glob_pattern: "*.ts" }, "c1");
+
+    // The glob is a filter on a grep, not a regex: `**/*.ts` in `pattern` is a parse
+    // error, which is what made Glob unusable.
+    assert.equal(args.glob, "**/*.ts");
+    assert.equal(args.pattern, undefined);
+    assert.equal(args.output_mode, "files_with_matches");
+
+    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "**/*.ts" }, "c1").glob, "**/*.ts");
+    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "/src/*.ts/" }, "c1").glob, "**/src/*.ts");
+    assert.equal(findTool("Glob").buildArgs({ glob_pattern: "" }, "c1").glob, "**/*");
+  });
+
+  it("retries a glob when ripgrep rejects the empty pattern", () => {
+    const tool = findTool("Glob");
+    const args = tool.buildArgs({ glob_pattern: "*.ts" }, "c1");
+
+    const retried = tool.retry(args, { error: "Received an empty pattern" });
+    assert.equal(retried.pattern, ".");
+    assert.equal(retried.glob, "**/*.ts");
+
+    // Any other failure is the model's to fix.
+    assert.equal(tool.retry(args, { error: "no such directory" }), null);
+    assert.equal(tool.retry(args, { success: {} }), null);
+  });
+
+  it("reads a glob result, which arrives in grep's shape", () => {
+    const text = renderResult("Glob", {
+      success: {
+        pattern: ".",
+        path: "/repo",
+        output_mode: "files_with_matches",
+        workspace_results: { files: { files: ["/repo/a.ts", "/repo/b.ts"], total_files: 2 } },
+      },
+    });
+
+    assert.equal(text, "/repo/a.ts\n/repo/b.ts");
   });
 
   it("renders a read result as its content", () => {
@@ -181,16 +211,17 @@ describe("tool loop", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
+    root = loadRoot({ workbench: WORKBENCH });
     stub = await startStubProvider([
       toolCallChunks("call-1", "Read", { path: "/tmp/example.txt" }),
       textChunks("The file says hello."),
     ]);
 
     const home = path.join(tmpRoot, "home");
-    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    const state = path.join(tmpRoot, "state");
+    fs.mkdirSync(state, { recursive: true });
     fs.writeFileSync(
-      path.join(home, ".ccursor", "providers.json"),
+      path.join(state, "providers.json"),
       JSON.stringify({
         providers: [
           {
@@ -206,10 +237,10 @@ describe("tool loop", { skip }, () => {
     );
 
     process.env.HOME = home;
-    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state");
+    process.env.CURSOR_BYOK_STATE = state;
 
     const { createServer } = await import("../src/server.js");
-    instance = createServer({ extensionJs: bundle, port: 0 });
+    instance = createServer({ workbench: WORKBENCH, port: 0 });
     const address = await instance.listen();
     base = `http://127.0.0.1:${address.port}`;
   });
@@ -346,7 +377,7 @@ describe("edit flow", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
+    root = loadRoot({ workbench: WORKBENCH });
     stub = await startStubProvider([
       toolCallChunks("edit-1", "Edit", {
         path: "/tmp/edit-me.txt",
@@ -357,9 +388,10 @@ describe("edit flow", { skip }, () => {
     ]);
 
     const home = path.join(tmpRoot, "home-edit");
-    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    const state = path.join(tmpRoot, "state-edit");
+    fs.mkdirSync(state, { recursive: true });
     fs.writeFileSync(
-      path.join(home, ".ccursor", "providers.json"),
+      path.join(state, "providers.json"),
       JSON.stringify({
         providers: [
           {
@@ -375,10 +407,10 @@ describe("edit flow", { skip }, () => {
     );
 
     process.env.HOME = home;
-    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state-edit");
+    process.env.CURSOR_BYOK_STATE = state;
 
     const { createServer } = await import("../src/server.js");
-    instance = createServer({ extensionJs: bundle, port: 0 });
+    instance = createServer({ workbench: WORKBENCH, port: 0 });
     const address = await instance.listen();
     base = `http://127.0.0.1:${address.port}`;
   });
@@ -512,18 +544,66 @@ describe("subagents", () => {
     assert.ok(names.includes("Write"));
   });
 
-  it("gives a subagent its own system prompt", async () => {
+  it("sends no system message when the request carries none", async () => {
+    // Cursor's own prompt lives on its servers. Inventing one would describe an IDE
+    // this project is not, so nothing is sent at all.
     const { systemPrompt } = await import("../src/agent/prompt.js");
-
-    assert.match(systemPrompt({}, "explore"), /subagent/i);
-    assert.match(systemPrompt({}, "explore"), /cannot delegate/i);
-    assert.match(systemPrompt({}, "explore"), /Do not change anything/);
-    assert.equal(systemPrompt({}, ""), systemPrompt({}));
+    assert.equal(systemPrompt({}), "");
   });
 
-  it("still honours a custom prompt inside a subagent", async () => {
+  it("uses the user's custom instructions when present", async () => {
     const { systemPrompt } = await import("../src/agent/prompt.js");
-    assert.equal(systemPrompt({ custom_system_prompt: "be brief" }, "explore"), "be brief");
+    assert.equal(systemPrompt({ custom_system_prompt: "be brief" }), "be brief");
+  });
+
+  it("includes AGENTS.md, which the client sends as cloud_rule", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    const prompt = systemPrompt({
+      action: {
+        user_message_action: { request_context: { cloud_rule: "# Rules\n- use tabs" } },
+      },
+    });
+
+    // Passed through verbatim: no wrapper tags of our own.
+    assert.equal(prompt, "# Rules\n- use tabs");
+  });
+
+  it("includes workspace rules the client sent", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    const prompt = systemPrompt({
+      action: {
+        user_message_action: {
+          request_context: {
+            rules: [{ full_path: "/r/.cursor/rules/a.mdc", content: "prefer small files" }],
+          },
+        },
+      },
+    });
+
+    assert.equal(prompt, "prefer small files");
+  });
+
+  it("includes Cursor's own subagent reminder when the client sends it", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    const prompt = systemPrompt({
+      action: {
+        user_message_action: {
+          user_message: { subagent_system_reminder: "<system_reminder>be a subagent</system_reminder>" },
+        },
+      },
+    });
+
+    assert.equal(prompt, "<system_reminder>be a subagent</system_reminder>");
+  });
+
+  it("adds nothing when only some pieces are present", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    const prompt = systemPrompt({
+      custom_system_prompt: "custom",
+      action: { user_message_action: { request_context: {} } },
+    });
+
+    assert.equal(prompt, "custom");
   });
 });
 
@@ -534,7 +614,7 @@ describe("subagent delegation is refused", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
+    root = loadRoot({ workbench: WORKBENCH });
 
     // The model, running as a subagent, tries to delegate anyway.
     stub = await startStubProvider([
@@ -543,9 +623,10 @@ describe("subagent delegation is refused", { skip }, () => {
     ]);
 
     const home = path.join(tmpRoot, "home-nested");
-    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    const state = path.join(tmpRoot, "state-nested");
+    fs.mkdirSync(state, { recursive: true });
     fs.writeFileSync(
-      path.join(home, ".ccursor", "providers.json"),
+      path.join(state, "providers.json"),
       JSON.stringify({
         providers: [
           {
@@ -561,10 +642,10 @@ describe("subagent delegation is refused", { skip }, () => {
     );
 
     process.env.HOME = home;
-    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state-nested");
+    process.env.CURSOR_BYOK_STATE = state;
 
     const { createServer } = await import("../src/server.js");
-    instance = createServer({ extensionJs: bundle, port: 0 });
+    instance = createServer({ workbench: WORKBENCH, port: 0 });
     const address = await instance.listen();
     base = `http://127.0.0.1:${address.port}`;
   });
@@ -626,6 +707,168 @@ describe("subagent delegation is refused", { skip }, () => {
       second.tools?.some((tool) => tool.function.name === "Task") ?? false,
       false,
       "Task is not in the subagent's tool list",
+    );
+  });
+});
+
+describe("workspace paths", () => {
+  const ctx = { workspacePaths: ["/home/me/repo"] };
+
+  it("reads the folders the user has open", async () => {
+    const { workspacePaths } = await import("../src/agent/request.js");
+
+    assert.deepEqual(
+      workspacePaths({
+        action: {
+          user_message_action: { request_context: { env: { workspace_paths: ["/home/me/repo"] } } },
+        },
+      }),
+      ["/home/me/repo"],
+    );
+    assert.deepEqual(workspacePaths({}), []);
+  });
+
+  it("finds the folders on a resumed turn too", async () => {
+    const { workspacePaths } = await import("../src/agent/request.js");
+
+    assert.deepEqual(
+      workspacePaths({ action: { resume_action: { request_context: { env: { workspace_paths: ["/r"] } } } } }),
+      ["/r"],
+    );
+  });
+
+  it("clamps a root glob to the workspace", () => {
+    // A model that does not know where it is asks for "/". Searching the whole
+    // filesystem reads /proc and answers the wrong question.
+    const args = findTool("Glob").buildArgs({ glob_pattern: "*", target_directory: "/" }, "c1", ctx);
+    assert.equal(args.path, "/home/me/repo");
+  });
+
+  it("clamps a missing directory to the workspace", () => {
+    const args = findTool("Glob").buildArgs({ glob_pattern: "*.js" }, "c1", ctx);
+    assert.equal(args.path, "/home/me/repo");
+  });
+
+  it("clamps a root grep to the workspace", () => {
+    const args = findTool("Grep").buildArgs({ pattern: "x", path: "/" }, "c1", ctx);
+    assert.equal(args.path, "/home/me/repo");
+  });
+
+  it("leaves an explicit path alone", () => {
+    const args = findTool("Glob").buildArgs(
+      { glob_pattern: "*.js", target_directory: "/home/me/repo/src" },
+      "c1",
+      ctx,
+    );
+    assert.equal(args.path, "/home/me/repo/src");
+  });
+
+  it("omits the path when there is no workspace to fall back to", () => {
+    const args = findTool("Glob").buildArgs({ glob_pattern: "*", target_directory: "/" }, "c1", {});
+    assert.equal("path" in args, false);
+  });
+
+});
+
+describe("system prompt spec", () => {
+  const withContext = (extra) => ({
+    action: {
+      user_message_action: { request_context: { cloud_rule: "AGENTS" } },
+    },
+    ...extra,
+  });
+
+  it("lets a replacement replace everything", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    assert.equal(systemPrompt(withContext({ system_prompt_spec: { replace: "REPLACED" } })), "REPLACED");
+  });
+
+  it("appends what the request asked to append", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    assert.equal(systemPrompt(withContext({ system_prompt_spec: { append: "MORE" } })), "AGENTS\n\nMORE");
+  });
+
+  it("uses the append text alone when there is nothing else", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    assert.equal(systemPrompt({ system_prompt_spec: { append: "MORE" } }), "MORE");
+  });
+
+  it("ignores an empty spec", async () => {
+    const { systemPrompt } = await import("../src/agent/prompt.js");
+    assert.equal(systemPrompt(withContext({ system_prompt_spec: {} })), "AGENTS");
+  });
+});
+
+describe("system message reaches the provider", { skip }, () => {
+  let stub;
+
+  after(async () => {
+    if (stub) await new Promise((resolve) => stub.close(resolve));
+  });
+
+  it("sends user_info before Cursor's prompt, so the model knows its workspace", async () => {
+    stub = await startStubProvider([textChunks("ok")]);
+
+    const state = path.join(tmpRoot, "state-system-message");
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(path.join(state, "prompt.txt"), "You are Cursor.\n");
+
+    const saved = process.env.CURSOR_BYOK_STATE;
+    process.env.CURSOR_BYOK_STATE = state;
+
+    try {
+      const { runTurn } = await import("../src/agent/turn.js");
+      const root = loadRoot({ workbench: WORKBENCH });
+
+      const request = {
+        conversation_id: "conv-system-message",
+        requested_model: { model_id: "stub/model" },
+        action: {
+          user_message_action: {
+            user_message: { text: "where are we?" },
+            request_context: {
+              env: { workspace_paths: ["/home/user/repo"], shell: "bash", os_version: "linux 6.8" },
+            },
+          },
+        },
+      };
+
+      const providers = [
+        {
+          id: "stub",
+          name: "Stub",
+          type: "openai-chat",
+          baseUrl: `http://127.0.0.1:${stub.address().port}/v1`,
+          auth: { kind: "apiKey", value: "k" },
+          models: [{ id: "stub/model", apiModel: "stub-model" }],
+        },
+      ];
+
+      for await (const _frame of runTurn({
+        root,
+        request,
+        providers,
+        requestId: "system-message-turn",
+        queued: "",
+        workbench: WORKBENCH,
+      })) {
+        // Drain the stream; the provider request is what this test inspects.
+      }
+    } finally {
+      if (saved === undefined) delete process.env.CURSOR_BYOK_STATE;
+      else process.env.CURSOR_BYOK_STATE = saved;
+    }
+
+    const system = stub.requests[0].messages[0];
+    assert.equal(system.role, "system");
+    assert.match(system.content, /^<user_info>/);
+    assert.match(system.content, /Workspace Path: \/home\/user\/repo/);
+    assert.match(system.content, /You are Cursor\./);
+
+    // Order matters: the model reads where it is before it reads how to behave.
+    assert.ok(
+      system.content.indexOf("<user_info>") < system.content.indexOf("You are Cursor."),
+      "user_info comes first",
     );
   });
 });

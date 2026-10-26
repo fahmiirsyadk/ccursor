@@ -20,7 +20,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as bundles from "./bundles.js";
-import * as ccursor from "./ccursor.js";
 import * as daemon from "./daemon.js";
 import * as extensionHost from "./extensionHost.js";
 import * as inject from "./inject.js";
@@ -31,9 +30,10 @@ import * as settings from "./settings.js";
 import * as state from "./state.js";
 import * as update from "./update.js";
 import { cursorBinary, discover } from "./locate.js";
+import { saveBasePrompt } from "./prompt/base.js";
 import {
   DEFAULT_PORT,
-  HOOK_MARKER,
+  FOREIGN_HOOK,
   defaultInstallDir,
   providersFile,
   routesFile,
@@ -70,13 +70,9 @@ export async function cmdApply(args = {}) {
   info(`app root: ${appRoot}`);
   detail(`version ${version ?? "unknown"}`);
 
-  // The extension is the one thing we do not ship: it is where the protobuf schema
-  // lives, and it is a large third-party artifact. Everything else below is ours.
-  if (args.skipInstaller) {
-    detail("skipping extension install (--skip-installer)");
-  } else if (!(await ccursor.ensureExtension(appRoot))) {
-    warn("BYOK extension unavailable; the server will fall back to the cached schema");
-  }
+  // Nothing third-party is installed or required: the schema comes from Cursor's
+  // own client, the router goes into Cursor's own extension hosts, and the server
+  // is this repository.
 
   const files = bundles.bundlePaths(appRoot);
   if (files.length === 0) {
@@ -94,7 +90,13 @@ export async function cmdApply(args = {}) {
       if (args.dryRun) {
         const [, sub] = bundles.patchSubscription(data);
         const [, admin] = bundles.patchAdminPolicy(data);
-        outcome = { path: file, subscription: sub, adminPolicy: admin, changed: false };
+        outcome = {
+          path: file,
+          subscription: sub,
+          adminPolicy: admin,
+          foreignHook: data.includes(FOREIGN_HOOK.start),
+          changed: false,
+        };
       } else {
         // A baseline is only useful if it is pristine. Capturing one from an
         // already-patched bundle would make revert a no-op.
@@ -110,6 +112,13 @@ export async function cmdApply(args = {}) {
       ok(
         `${path.basename(file)}: subscription=${outcome.subscription} admin=${outcome.adminPolicy}`,
       );
+      if (outcome.foreignHook) {
+        detail(
+          args.dryRun
+            ? "an earlier installer's hook would be removed"
+            : "removed a hook an earlier installer left behind",
+        );
+      }
       if (outcome.changed) changed.push(file);
     }
   } catch (error) {
@@ -132,11 +141,9 @@ export async function cmdApply(args = {}) {
 
   settings.ensureSettings();
 
-  // Cache the schema first: routes and the server both depend on it. Cursor's own
-  // client is the better source, so it is tried first and the extension is only a
-  // fallback for an install where the workbench bundle cannot be read.
+  // Cache the schema: routes and the server both depend on it. The only source is
+  // Cursor's own client, which is generated from the protocol it speaks.
   const workbench = path.join(appRoot, "out/vs/workbench/workbench.desktop.main.js");
-  const extensionJs = ccursor.schemaSource(appRoot);
   let cached = false;
 
   if (fs.existsSync(workbench)) {
@@ -152,20 +159,21 @@ export async function cmdApply(args = {}) {
     }
   }
 
-  if (!cached && extensionJs) {
-    try {
-      const result = schemaCache.saveFromExtension(extensionJs);
-      warn("using the BYOK extension's schema, which may be older than Cursor's client");
-      ok(`schema: ${result.messages} descriptors${result.reused ? " (already cached)" : ""}`);
-      cached = true;
-    } catch (error) {
-      warn(`schema not cached: ${error.message}`);
-    }
+  if (!cached) {
+    fail(`Cursor's client bundle not found at ${workbench}`);
+    return 1;
   }
 
-  if (!cached) warn("no schema cached; run apply again after installing Cursor");
+  // Cursor's own agent prompt, read from its bundled cursor-agent-exec extension.
+  try {
+    const prompt = saveBasePrompt(appRoot);
+    ok(`prompt: ${prompt.length} chars from cursor-agent-exec`);
+  } catch (error) {
+    warn(`prompt not extracted: ${error.message}`);
+    warn("turns will run without Cursor's prompt");
+  }
 
-  settings.ensureRoutes({ workbench, extension: extensionJs });
+  settings.ensureRoutes({ workbench });
 
   // Replace whatever router is in the extension hosts with ours.
   const injected = inject.injectAll(appRoot, routes.routesPath());
@@ -207,13 +215,14 @@ export async function cmdStatus() {
   detail(`version ${version ?? "unknown"}`);
   detail(state.describeMarker());
 
-  const [alwaysLocal, agentHost] = ccursor.routersPresent(appRoot);
-  const ext = ccursor.extensionPresent(appRoot);
+  const [alwaysLocal, agentHost] = inject.routersPresent(appRoot);
 
   for (const file of bundles.bundlePaths(appRoot)) {
     const data = fs.readFileSync(file, "utf8");
     heading(path.basename(file));
-    console.log(`  hook injected       : ${data.includes(HOOK_MARKER) ? "yes" : "NO"}`);
+    console.log(
+      `  foreign hook        : ${data.includes(FOREIGN_HOOK.start) ? "PRESENT -> run apply" : "none"}`,
+    );
     console.log(
       `  subscription guard  : ${bundles.subscriptionPatched(data) ? "neutralised" : "VULNERABLE"}`,
     );
@@ -223,7 +232,6 @@ export async function cmdStatus() {
   }
 
   heading("transport");
-  console.log(`  BYOK extension      : ${ext ? "installed" : "MISSING (schema cache only)"}`);
   console.log(`  router always-local : ${alwaysLocal ? "yes" : "NO"}`);
   console.log(`  router agent-host   : ${agentHost ? "yes" : "NO"}`);
 
@@ -282,7 +290,9 @@ export async function cmdDoctor() {
   for (const file of bundles.bundlePaths(appRoot)) {
     const data = fs.readFileSync(file, "utf8");
     const name = path.basename(file);
-    if (!data.includes(HOOK_MARKER)) problems.push(`${name}: renderer hook missing -> run apply`);
+    if (data.includes(FOREIGN_HOOK.start)) {
+      problems.push(`${name}: an earlier installer's hook is still in the bundle -> run apply`);
+    }
     if (!bundles.subscriptionPatched(data)) {
       problems.push(`${name}: subscription guard active -> BYOK turns itself off`);
     }
@@ -291,12 +301,9 @@ export async function cmdDoctor() {
     }
   }
 
-  const [alwaysLocal, agentHost] = ccursor.routersPresent(appRoot);
+  const [alwaysLocal, agentHost] = inject.routersPresent(appRoot);
   if (!alwaysLocal || !agentHost) {
     problems.push("HTTP/1.1 router missing in one or both extension hosts -> run apply");
-  }
-  if (!ccursor.extensionPresent(appRoot)) {
-    problems.push("BYOK extension not installed -> run apply");
   }
 
   const cfg = readJsonOr(settingsFile());
@@ -326,8 +333,8 @@ export async function cmdDoctor() {
     problems.push("routes.json missing -> run apply");
   } else if (!Array.isArray(routes.redirect) || routes.redirect.length === 0) {
     problems.push("routes.json has no redirect rules -> run apply");
-  } else if ((await daemon.health(port)) !== "byok") {
-    problems.push(`BYOK server not answering as ours on port ${port} -> run 'cursor-byok run'`);
+  } else if ((await daemon.health(port)) !== "ours") {
+    problems.push(`server not answering on port ${port} -> run 'cursor-byok run'`);
   }
 
   const vision = settings.describeVision();
@@ -386,7 +393,7 @@ export function cmdRevert() {
   if (restored) {
     settings.refreshChecksums(appRoot, bundles.bundlePaths(appRoot));
     // Baselines are kept: a later apply must capture from them, not from whatever
-    // the hook installer leaves behind.
+    // the previous patch left behind.
   }
 
   heading("result");
@@ -418,11 +425,8 @@ export async function cmdRun(args = {}) {
   if (server === "started") detail("local server started");
   else if (server === "already-running") detail("local server already running");
   else if (server === "port-taken") {
-    // The port is held by a BYOK server that is not ours — almost always the
-    // extension inside a Cursor that is already open. Launching now would start a
-    // second window and the wrong server would keep serving.
-    fail("Cursor is already running, so the port belongs to its extension");
-    detail("quit Cursor, then run this again — the local server must win the port");
+    fail(`port ${DEFAULT_PORT} is already held by another process`);
+    detail(`find it with: ss -ltnp | grep ${DEFAULT_PORT}`);
     return 1;
   }
 
@@ -471,8 +475,8 @@ export async function cmdServe(args = {}) {
 }
 
 /** Stop the background server. */
-export async function cmdStop() {
-  return daemon.stopServer() ? 0 : 1;
+export async function cmdStop(args = {}) {
+  return daemon.stopServer({ force: args.force === true }) ? 0 : 1;
 }
 
 export async function cmdUpdate(args = {}) {
@@ -596,7 +600,6 @@ Usage:
 Commands:
   apply                 patch an existing install (idempotent)
     --dry-run           report what would change without writing
-    --skip-installer    do not run the @cometix/ccursor installer
     --skip-seed         do not seed the model catalog
   status                report what is currently in effect
   doctor                diagnose a broken setup
@@ -606,6 +609,7 @@ Commands:
     --port <n>          listen on a different port (default 39831)
     --app <dir>         point at resources/app
   stop                  stop the background server
+    --force             stop even while Cursor is running
   update                extract, patch and swap in a new AppImage
     --appimage <path>   AppImage to install (default ~/Applications/Cursor.AppImage)
     --install-dir <dir> where the patched tree lives
@@ -624,10 +628,10 @@ Environment:
 
 const FLAGS = {
   "--dry-run": "dryRun",
-  "--skip-installer": "skipInstaller",
   "--skip-seed": "skipSeed",
   "--drop-old": "dropOld",
   "--rollback": "rollback",
+  "--force": "force",
 };
 
 const VALUE_FLAGS = {

@@ -1,61 +1,90 @@
 /**
- * The system prompt.
+ * The system message.
  *
- * Cursor does not send one: the server is expected to supply it. This is a short
- * prompt that describes the environment honestly — a coding assistant inside an IDE,
- * answering in Markdown — without pretending to be Cursor's own agent.
+ * Two sources, in Cursor's own order:
  *
- * A request may override it with `custom_system_prompt`, which is what the IDE's
- * custom-instructions setting produces.
+ *   1. `user_info`  — where the model is: OS, shell, workspace path, date.
+ *                     Built per turn by Cursor's component from the request's
+ *                     environment, because every value in it changes.
+ *   2. the prompt   — Cursor's agent prompt, extracted once by `apply`.
+ *
+ * On top of those, the text the request carries is appended:
+ *
+ *   custom_system_prompt                    the user's custom instructions
+ *   system_prompt_spec.replace              a whole replacement prompt
+ *   system_prompt_spec.append               text appended to the prompt
+ *   request_context.cloud_rule              AGENTS.md contents
+ *   request_context.rules                   .cursor/rules and their content
+ *   request_context.non_file_rules          rules that live outside the workspace
+ *   user_message.subagent_system_reminder   a reminder Cursor attaches to a subagent
+ *
+ * Those are passed through verbatim, joined by a blank line. No wrapper tags, no
+ * reordering, no summary: adding framing of our own would be a prompt this project
+ * invented, and it would claim things about the IDE that may not be true.
+ *
+ * When none of it is present, no system message is sent at all.
  */
 
-/** Built-in prompt used when the request does not carry one. */
-export const DEFAULT_SYSTEM_PROMPT = `You are a coding assistant inside the Cursor IDE.
+import { requestContext } from "./request.js";
 
-Answer in Markdown. Be concise and concrete. When you show code, use fenced blocks
-with a language tag. If a question depends on files you cannot see, say what you
-would need rather than guessing.
-
-You are talking to a developer working in a repository. Prefer solutions that fit
-the code already there over new abstractions.`;
-
-/** Prompt for a subagent, which has a narrower job than the parent. */
-const SUBAGENT_PROMPT = `You are a subagent inside the Cursor IDE, working on one task
-that a parent agent delegated to you.
-
-Do the work yourself with the tools you have. You cannot delegate: there is no Task
-tool, and asking for one will be refused. Read what you need, then report back.
-
-Your final message is the only thing the parent sees, so it must stand alone: state
-the answer, name the files or paths that matter, and leave out the play-by-play.`;
-
-/** What each subagent type is for. Kept short: the task prompt carries the detail. */
-const SUBAGENT_ROLES = {
-  explore: "You are exploring a codebase. Report structure, entry points and the files that matter. Do not change anything.",
-  debug: "You are diagnosing a failure. Find the cause and say what would fix it.",
-  bash: "You are running commands. Report what they did and what they printed.",
-  shell: "You are running commands. Report what they did and what they printed.",
-  media_review: "You are reviewing media. Describe what you can see or read.",
-  cursor_guide: "You are answering questions about Cursor itself.",
-  watch_video: "You are reviewing a video. Report what happens in it.",
-};
+/** Content of one cursor rule, as the client sent it. */
+function ruleText(rule) {
+  if (!rule || typeof rule !== "object") return "";
+  return typeof rule.content === "string" ? rule.content.trim() : "";
+}
 
 /**
- * Resolve the system prompt for one turn.
+ * Build the system message from what the client sent.
  *
- * @param {object} runRequest
- * @param {string} [subagent] subagent type, when this run is a subagent
+ * @param {object} runRequest decoded agent.v1.AgentRunRequest
+ * @param {string} [base] Cursor's prompt, or "" when it was never extracted
+ * @returns {string} the system message, or "" when there is nothing to send
  */
-export function systemPrompt(runRequest, subagent = "") {
+export function systemPrompt(runRequest, base = "") {
+  const context = requestContext(runRequest);
+  const parts = [];
+
+  // A whole replacement wins over everything: that is what the field means, and it
+  // is the mechanism Cursor gives a client for overriding the prompt.
+  const spec = runRequest?.system_prompt_spec;
+  const replaced = typeof spec?.replace === "string" ? spec.replace.trim() : "";
+  if (replaced.length > 0) return finish(replaced, spec);
+
+  if (typeof base === "string" && base.trim().length > 0) parts.push(base.trim());
+
   const custom = runRequest?.custom_system_prompt;
-  if (typeof custom === "string" && custom.trim().length > 0) return custom;
+  if (typeof custom === "string" && custom.trim().length > 0) parts.push(custom.trim());
 
-  if (subagent) {
-    const role = SUBAGENT_ROLES[subagent];
-    return role ? `${SUBAGENT_PROMPT}
+  const agents = context?.cloud_rule;
+  if (typeof agents === "string" && agents.trim().length > 0) parts.push(agents.trim());
 
-${role}` : SUBAGENT_PROMPT;
+  for (const rule of [...(context?.rules ?? []), ...(context?.non_file_rules ?? [])]) {
+    const text = ruleText(rule);
+    if (text.length > 0) parts.push(text);
   }
 
-  return DEFAULT_SYSTEM_PROMPT;
+  const reminder = runRequest?.action?.user_message_action?.user_message?.subagent_system_reminder;
+  if (typeof reminder === "string" && reminder.trim().length > 0) parts.push(reminder.trim());
+
+  return finish(parts.join("\n\n"), spec);
+}
+
+/** Append whatever the request asked to append, and drop an empty result. */
+function finish(prompt, spec) {
+  const appended = typeof spec?.append === "string" ? spec.append.trim() : "";
+  if (appended.length === 0) return prompt;
+  return prompt.length > 0 ? `${prompt}\n\n${appended}` : appended;
+}
+
+/**
+ * The messages to send: a system message only when there is something in it.
+ *
+ * @param {object} runRequest decoded agent.v1.AgentRunRequest
+ * @param {Array} turns the conversation
+ * @param {{base?: string, userInfo?: string}} [context] what Cursor contributes
+ */
+export function withSystemPrompt(runRequest, turns, { base = "", userInfo = "" } = {}) {
+  const preamble = [userInfo.trim(), base.trim()].filter((part) => part.length > 0).join("\n\n");
+  const system = systemPrompt(runRequest, preamble);
+  return system.length > 0 ? [{ role: "system", content: system }, ...turns] : turns;
 }

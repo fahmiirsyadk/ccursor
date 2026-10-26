@@ -72,18 +72,6 @@ describe("settings", () => {
     assert.equal(settings.ensureSettings(), "already");
   });
 
-  it("drops a stale port override", () => {
-    const home = path.join(tmpRoot, "h2");
-    const dir = path.join(home, ".config/Cursor/User");
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ "cursor2plus.server.port": 39999 }));
-    process.env.HOME = home;
-
-    settings.ensureSettings();
-
-    const written = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8"));
-    assert.equal("cursor2plus.server.port" in written, false);
-  });
 });
 
 describe("routes", () => {

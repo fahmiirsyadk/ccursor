@@ -24,9 +24,14 @@ import * as routes from "./routes.js";
 import { detail, ok, warn } from "./ui.js";
 
 export const DISABLE_HTTP2 = "cursor.general.disableHttp2";
-const PORT_OVERRIDE = "cursor2plus.server.port";
 
-/** Force HTTP/1.1 and drop any port override that fights routes.json. */
+/**
+ * Force HTTP/1.1.
+ *
+ * Cursor's transport factory picks HTTP/2 unless this is true, and `node:http2`
+ * never touches `http.request` — so an HTTP/2 session bypasses the router
+ * completely. The setting is not optional.
+ */
 export function ensureSettings() {
   const file = settingsFile();
   let current = readJson(file);
@@ -42,10 +47,6 @@ export function ensureSettings() {
   let changed = false;
   if (current[DISABLE_HTTP2] !== true) {
     current[DISABLE_HTTP2] = true;
-    changed = true;
-  }
-  if (PORT_OVERRIDE in current) {
-    delete current[PORT_OVERRIDE];
     changed = true;
   }
 

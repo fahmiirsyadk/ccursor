@@ -39,7 +39,7 @@ describe("seeding the toggle", () => {
     // Build a minimal state.vscdb that seed.js can open.
     const home = path.join(tmpRoot, "home");
     const dbDir = path.join(home, ".config/Cursor/User/globalStorage");
-    const cfgDir = path.join(home, ".ccursor");
+    const cfgDir = path.join(home, ".cursor-byok-patch");
     fs.mkdirSync(dbDir, { recursive: true });
     fs.mkdirSync(cfgDir, { recursive: true });
 

@@ -48,9 +48,48 @@ export const SUBAGENT_TYPES = new Set([
   "custom",
 ]);
 
+/**
+ * Where a path really points.
+ *
+ * A model that has not been told where the workspace is asks for "/" or omits the
+ * directory entirely. Searching the whole filesystem is never what the user meant:
+ * it is slow, it reads /proc, and it answers the wrong question. Both cases are
+ * clamped to the workspace.
+ *
+ * @param {string|undefined} path what the model asked for
+ * @param {{workspacePaths?: string[]}} [context]
+ * @returns {string} a usable path, or "" when there is nothing to fall back to
+ */
+function resolvePath(path, context) {
+  const requested = typeof path === "string" ? path.trim() : "";
+  const roots = (context?.workspacePaths ?? []).filter((value) => typeof value === "string" && value.length > 0);
+
+  // "/" and "" are the two ways a model says "I do not know where I am".
+  if (requested === "" || requested === "/" || requested === ".") {
+    return roots[0] ?? "";
+  }
+  return requested;
+}
+
 /** Normalise line endings, as Cursor does before writing. */
 function normaliseText(text) {
   return String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+/**
+ * A glob pattern in the shape ripgrep wants.
+ *
+ * Copied from Cursor's own Glob implementation: forward slashes, no leading slash, no
+ * trailing slash, and a double-star prefix so a bare `*.ts` matches recursively. An
+ * empty pattern becomes "all files", which is what Cursor tells the model to pass
+ * instead of nothing.
+ */
+function normalizeGlob(pattern) {
+  let value = String(pattern ?? "").replace(/\\/g, "/");
+  if (value.startsWith("/")) value = value.slice(1);
+  if (value.endsWith("/")) value = value.slice(0, -1);
+  if (!value.startsWith("**/")) value = `**/${value}`;
+  return value === "**/" ? "**/*" : value;
 }
 
 /** Split a command line into the words Cursor's parser expects. */
@@ -227,9 +266,9 @@ export const TOOLS = [
         head_limit: { type: "integer", description: "Limit the number of results." },
       },
     },
-    buildArgs: (input, toolCallId) => ({
+    buildArgs: (input, toolCallId, context) => ({
       pattern: String(input.pattern ?? ""),
-      ...(input.path ? { path: String(input.path) } : {}),
+      ...(resolvePath(input.path, context) ? { path: resolvePath(input.path, context) } : {}),
       ...(typeof input.glob === "string" ? { glob: input.glob } : {}),
       ...(typeof input.type === "string" ? { type: input.type } : {}),
       output_mode: typeof input.output_mode === "string" ? input.output_mode : "content",
@@ -261,14 +300,24 @@ export const TOOLS = [
       glob_pattern: String(input.glob_pattern ?? input.pattern ?? ""),
       target_directory: String(input.target_directory ?? ""),
     }),
-    buildArgs: (input, toolCallId) => {
-      const pattern = String(input.glob_pattern ?? input.pattern ?? "");
+    // Cursor has no glob exec: a Glob runs as a Grep with the pattern empty and the
+    // glob as the filter, asking only for file names. Putting the glob in `pattern`
+    // makes ripgrep parse it as a regular expression, which is why `**/*.md` came
+    // back as "regex parse error".
+    buildArgs: (input, toolCallId, context) => {
+      const directory = resolvePath(input.target_directory, context);
       return {
-        pattern: pattern.startsWith("**/") ? pattern : `**/${pattern}`,
-        ...(input.target_directory ? { path: String(input.target_directory) } : {}),
+        glob: normalizeGlob(input.glob_pattern ?? input.pattern),
+        ...(directory ? { path: directory } : {}),
         output_mode: "files_with_matches",
         tool_call_id: toolCallId,
       };
+    },
+    // ripgrep rejects a search with no pattern, and Cursor retries the same call with
+    // "." — every line matches, so `files_with_matches` returns the file list.
+    retry: (args, result) => {
+      const error = typeof result?.error === "string" ? result.error.toLowerCase() : "";
+      return error.includes("received an empty pattern") ? { ...args, pattern: "." } : null;
     },
   },
 
@@ -522,7 +571,8 @@ function renderSuccess(toolName, value) {
     }
 
     case "Glob": {
-      const files = value?.files ?? [];
+      // A Glob is executed as a Grep, so the file list arrives under grep's shape.
+      const files = value?.workspace_results?.files?.files ?? value?.files ?? [];
       return files.length > 0 ? files.join("\n") : "No files matched.";
     }
 

@@ -15,7 +15,6 @@ import fs from "node:fs";
 import protobuf from "protobufjs";
 import "protobufjs/ext/descriptor.js";
 
-import { readDescriptors } from "./descriptor.js";
 import * as schemaCache from "./cache.js";
 import { readClientSchema } from "./client-schema.js";
 
@@ -77,25 +76,16 @@ export function loadRoot({ workbench, extension } = {}) {
   return root;
 }
 
-function build({ workbench, extension }) {
-  // 1. The cache, when it still matches what it was built from.
+function build({ workbench }) {
+  // 1. The cache, when it still matches the bundle it was built from.
   const cached = schemaCache.load();
-  if (cached) {
-    const fresh =
-      (cached.kind === "client" && (!workbench || schemaCache.isFreshFor(workbench))) ||
-      (cached.kind === "extension" && (!extension || schemaCache.isFreshFor(extension)));
-
-    if (fresh) {
-      if (cached.kind === "client") {
-        const root = protobuf.Root.fromJSON(cached.json);
-        addEmptyIfMissing(root);
-        return root;
-      }
-      return fromDescriptors([...cached.raws, emptyDescriptor()]);
-    }
+  if (cached && (!workbench || schemaCache.isFreshFor(workbench))) {
+    const root = protobuf.Root.fromJSON(cached);
+    addEmptyIfMissing(root);
+    return root;
   }
 
-  // 2. The client bundle, which is the best source when it is readable.
+  // 2. The client bundle itself.
   if (workbench && fs.existsSync(workbench)) {
     const { json } = readClientSchema(workbench);
     const root = protobuf.Root.fromJSON(json);
@@ -103,17 +93,8 @@ function build({ workbench, extension }) {
     return root;
   }
 
-  // 3. The extension's descriptors, for an install where the workbench bundle is
-  //    unreadable but the extension is present.
-  if (extension && fs.existsSync(extension)) {
-    const descriptors = readDescriptors(extension);
-    if (descriptors.length > 0) {
-      return fromDescriptors([...descriptors.map((d) => d.raw), emptyDescriptor()]);
-    }
-  }
-
   throw new Error(
-    "no protobuf schema available: run 'cursor-byok apply' to cache it from the installed app",
+    "no protobuf schema available: run 'cursor-byok apply' to cache it from Cursor's client",
   );
 }
 
@@ -140,22 +121,6 @@ function addEmptyIfMissing(root) {
   } catch {
     /* a schema that already resolves does not need this */
   }
-}
-
-/**
- * A Root built strictly from the BYOK extension's descriptors.
- *
- * Not used for serving — the client schema is better — but `doctor` compares the two
- * to report drift, and a test needs to see the extension's view without the cache
- * answering instead.
- *
- * @param {string} extensionJs path to the extension bundle
- * @returns {import("protobufjs").Root}
- */
-export function rootFromExtension(extensionJs) {
-  const descriptors = readDescriptors(extensionJs);
-  if (descriptors.length === 0) throw new Error("no protobuf descriptors found in the extension bundle");
-  return fromDescriptors([...descriptors.map((d) => d.raw), emptyDescriptor()]);
 }
 
 /** Look up a message type, with a clear error when the schema changed. */

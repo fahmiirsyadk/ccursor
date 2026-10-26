@@ -48,7 +48,7 @@ const INTERNAL = 13;
 const AGENT_SERVICE = "agent.v1.AgentService";
 const BIDI_SERVICE = "aiserver.v1.BidiService";
 
-export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host = "127.0.0.1" } = {}) {
+export function createServer({ workbench, port = DEFAULT_PORT, host = "127.0.0.1" } = {}) {
   let root = null;
   let methods = null;
   /** Routes the client asked for that the cached schema does not know. */
@@ -69,7 +69,7 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
   };
 
   function getRoot() {
-    if (!root) root = loadRoot({ workbench, extension: extensionJs });
+    if (!root) root = loadRoot({ workbench });
     return root;
   }
 
@@ -118,6 +118,9 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
 
     if (req.method === "GET" && pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
+      // `mode` is not decoration: an installed BYOK extension probes this endpoint
+      // and steps aside when it sees it. Without the field it would fight for the
+      // port instead. Nothing here depends on that extension existing.
       res.end(JSON.stringify({ ok: true, mode: "byok", server: "ccursor-byok" }));
       return;
     }
@@ -285,6 +288,19 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
     });
   }
 
+  /** Name, message and cause of a failure, for the log. */
+  function describeError(error) {
+    const parts = [`${error?.name ?? "Error"}: ${error?.message ?? String(error)}`];
+    const cause = error?.cause;
+    if (cause) {
+      parts.push(`cause ${cause.name ?? ""}: ${cause.message ?? String(cause)}`);
+      if (cause.code) parts.push(`code ${cause.code}`);
+      if (cause.errno) parts.push(`errno ${cause.errno}`);
+    }
+    if (error?.code) parts.push(`code ${error.code}`);
+    return parts.join(" | ");
+  }
+
   /** Keep a request we could not read, so the shape can be inspected later. */
   function dumpFailure(req, raw, encoding, message) {
     try {
@@ -371,6 +387,7 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", async () => {
       let requestId = "";
+      let controller = null;
       try {
         // A streaming request arrives framed, and may be compressed per frame.
         const messages = readStreamRequest(
@@ -389,7 +406,7 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
           "cache-control": "no-store",
         });
 
-        const controller = new AbortController();
+        controller = new AbortController();
         res.on("close", () => {
           if (!res.writableEnded) controller.abort();
         });
@@ -427,6 +444,7 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
           requestId,
           queued,
           signal: controller.signal,
+          workbench,
         })) {
           if (res.writableEnded || res.destroyed) break;
           res.write(frame(message));
@@ -434,8 +452,15 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
 
         if (!res.writableEnded) res.end(endFrame({}));
       } catch (error) {
+        // A client that hangs up is not a server failure: it is the user pressing
+        // stop, or the window closing. Logging it as an error hides the real ones.
+        if (controller?.signal?.aborted || res.destroyed) {
+          detail(`RunSSE ${requestId.slice(0, 8)} aborted by the client`);
+          return;
+        }
+
         stats.errors += 1;
-        fail(`RunSSE failed: ${error.message}`);
+        fail(`RunSSE failed: ${describeError(error)}`);
         if (!res.headersSent) {
           res.writeHead(200, { "content-type": "application/connect+proto" });
         }
@@ -457,7 +482,18 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
     stats,
     listen() {
       return new Promise((resolve, reject) => {
-        server.once("error", reject);
+        server.once("error", (error) => {
+          if (error.code === "EADDRINUSE") {
+            reject(
+              new Error(
+                `port ${port} is already in use — another process holds it. ` +
+                  `Check with: ss -ltnp | grep ${port}`,
+              ),
+            );
+            return;
+          }
+          reject(error);
+        });
         server.listen(port, host, () => {
           const address = server.address();
           ok(`listening at http://${address.address}:${address.port}`);
@@ -475,10 +511,9 @@ export function createServer({ workbench, extensionJs, port = DEFAULT_PORT, host
 /** Start from the CLI, with both schema sources resolved from the install. */
 export async function start({ appRoot, port = DEFAULT_PORT } = {}) {
   const workbench = `${appRoot}/out/vs/workbench/workbench.desktop.main.js`;
-  const extensionJs = `${appRoot}/extensions/cursor2plus/dist/extension.js`;
   info(`schema: ${workbench}`);
   detail(`port ${port}`);
-  const instance = createServer({ workbench, extensionJs, port });
+  const instance = createServer({ workbench, port });
   await instance.listen();
   return instance;
 }

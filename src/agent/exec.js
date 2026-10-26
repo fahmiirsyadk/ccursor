@@ -15,7 +15,7 @@
  */
 
 import { encode, encodeMessage } from "./updates.js";
-import { next } from "./session.js";
+import { hasSession, next } from "./session.js";
 
 /** readToolCall -> read_tool_call */
 function snakeCase(name) {
@@ -57,27 +57,35 @@ export function toolCallCompleted(root, { callId, toolType, args, result, modelC
 }
 
 /**
- * Wait for the exec reply with a matching id.
+ * One step of waiting for an exec reply with a matching id.
+ *
+ * A single blocking wait is wrong here: Cursor's stall detector gives up after 30
+ * seconds of silence, and a Shell command can easily take longer than that. So the
+ * wait is broken into steps, and the caller sends a heartbeat between them.
  *
  * @param {string} requestId
  * @param {number} id exec id
- * @param {number} timeoutMs
- * @returns {Promise<object|null>} the ExecClientMessage payload
+ * @param {number} [idleMs] how long to wait before reporting idle
+ * @returns {Promise<{kind: "message", value: object}
+ *   | {kind: "idle"}
+ *   | {kind: "closed"}>}
  */
-export async function waitForExec(requestId, id, timeoutMs = 600_000) {
-  const deadline = Date.now() + timeoutMs;
+export async function nextExecReply(requestId, id, idleMs = 4000) {
+  // `next` opens a session when there is none, which would resurrect one the client
+  // has closed. Ask first.
+  if (!hasSession(requestId)) return { kind: "closed" };
 
-  for (;;) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return null;
+  const message = await next(requestId, idleMs);
 
-    const message = await next(requestId, remaining);
-    if (!message) return null;
-
-    const exec = message.exec_client_message;
-    if (!exec) continue; // heartbeat, cancellation, or an unrelated frame
-    if (Number(exec.id) !== Number(id)) continue;
-
-    return exec;
+  if (message === null) {
+    // `next` returns null both when it timed out and when the session closed.
+    // Ask the session which it was.
+    return hasSession(requestId) ? { kind: "idle" } : { kind: "closed" };
   }
+
+  const exec = message.exec_client_message;
+  if (!exec) return { kind: "idle" }; // heartbeat, cancellation, unrelated frame
+  if (Number(exec.id) !== Number(id)) return { kind: "idle" };
+
+  return { kind: "message", value: exec };
 }

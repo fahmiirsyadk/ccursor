@@ -16,7 +16,6 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import * as bundles from "./bundles.js";
-import * as ccursor from "./ccursor.js";
 import * as settings from "./settings.js";
 import * as state from "./state.js";
 import { defaultAppImage, defaultInstallDir, readJson } from "./paths.js";
@@ -61,15 +60,10 @@ function extract(appimage, destination) {
 }
 
 /** Apply every patch to a tree, raising on the first problem. */
-export async function patchTree(appRoot, { installHook = true } = {}) {
-  // Baseline first: the upstream installer rewrites these bundles, so capturing
-  // after it would make revert restore a hook-injected file instead of the one
-  // Cursor shipped.
+export async function patchTree(appRoot) {
+  // Baseline first: everything below rewrites these bundles, so capturing later
+  // would make revert restore a patched file instead of the one Cursor shipped.
   for (const file of bundles.bundlePaths(appRoot)) state.captureBaseline(file);
-
-  if (installHook && !(await ccursor.install(appRoot))) {
-    throw new UpdateError("hook installer failed");
-  }
 
   for (const file of bundles.bundlePaths(appRoot)) {
     const outcome = bundles.patchBundle(file);

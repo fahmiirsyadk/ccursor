@@ -238,6 +238,25 @@ export function injectAll(appRoot, routesPath) {
 }
 
 /**
+ * Which extension hosts carry a router, of any version.
+ *
+ * Presence only: a host that carries an older script still counts, because the next
+ * `apply` replaces it. Use `injected` to ask whether it is the current one.
+ *
+ * @param {string} appRoot
+ * @returns {boolean[]} one flag per routed host, in ROUTED_EXTENSIONS order
+ */
+export function routersPresent(appRoot) {
+  return ROUTED_EXTENSIONS.map((entry) => {
+    try {
+      return fs.readFileSync(hostPath(appRoot, entry), "utf8").includes(ROUTER_MARKER);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * Which extension hosts carry the router, and whether it is the current one.
  *
  * @param {string} appRoot

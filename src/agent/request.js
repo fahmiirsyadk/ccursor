@@ -288,6 +288,40 @@ export function subagentType(runRequest) {
   return typeof name === "string" ? name.trim().toLowerCase().replace(/-/g, "_") : "";
 }
 
+/**
+ * Directories the user has open.
+ *
+ * Cursor puts them in the request context, which hangs off whichever action the turn
+ * carries. Without them a subagent has no idea where the repository is: it globs "/"
+ * and reads /proc, which is both useless and slow.
+ *
+ * @returns {string[]} absolute paths, possibly empty
+ */
+export function workspacePaths(runRequest) {
+  const paths = requestContext(runRequest)?.env?.workspace_paths;
+  if (!Array.isArray(paths)) return [];
+  return paths.filter((value) => typeof value === "string" && value.length > 0);
+}
+
+/**
+ * The request context, whichever action carries it.
+ *
+ * A turn, a resume and a plan execution all attach one; they are the same message
+ * under three fields.
+ *
+ * @param {object} runRequest decoded agent.v1.AgentRunRequest
+ * @returns {object|null}
+ */
+export function requestContext(runRequest) {
+  const action = runRequest?.action ?? {};
+  return (
+    action.user_message_action?.request_context ??
+    action.resume_action?.request_context ??
+    action.execute_plan_action?.request_context ??
+    null
+  );
+}
+
 /** Conversation id, used for logs and for resuming a run. */
 export function conversationId(runRequest) {
   return runRequest?.conversation_id || "";

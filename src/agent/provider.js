@@ -188,6 +188,13 @@ export async function* streamOpenAi({ provider, apiModel, messages, tools, signa
   let stopReason = "end_turn";
 
   for await (const event of sseEvents(response)) {
+    // A gateway can answer 200 and then report the failure inside the stream. Left
+    // alone, that ends the turn with an empty answer and no explanation.
+    if (event.error) {
+      const message = event.error.message ?? JSON.stringify(event.error);
+      throw new Error(`${provider.name ?? provider.id}: ${message}`);
+    }
+
     if (event.usage) {
       usage.inputTokens = event.usage.prompt_tokens ?? usage.inputTokens;
       usage.outputTokens = event.usage.completion_tokens ?? usage.outputTokens;
@@ -227,6 +234,14 @@ export async function* streamOpenAi({ provider, apiModel, messages, tools, signa
 
   for (const entry of pending.values()) {
     yield { type: "tool_use_done", id: entry.id, name: entry.name, arguments: entry.arguments };
+  }
+
+  // A stream that produced nothing at all is a failure, not an empty answer.
+  if (usage.inputTokens === 0 && usage.outputTokens === 0) {
+    throw new Error(
+      `${provider.name ?? provider.id} returned an empty response — the endpoint may be ` +
+        "out of capacity or refusing the request",
+    );
   }
 
   yield { type: "done", stopReason, usage };

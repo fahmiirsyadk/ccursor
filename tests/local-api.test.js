@@ -24,13 +24,6 @@ after(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-function extensionJs() {
-  const found = discover();
-  if (!found.appRoot) return null;
-  const file = path.join(found.appRoot, "extensions", "cursor2plus", "dist", "extension.js");
-  return fs.existsSync(file) ? file : null;
-}
-
 /** Path to the workbench bundle, the primary schema source. */
 function workbenchBundle() {
   const found = discover();
@@ -39,8 +32,10 @@ function workbenchBundle() {
   return fs.existsSync(file) ? file : null;
 }
 
-const bundle = extensionJs();
-const skip = bundle ? false : "no Cursor install with the BYOK extension on this machine";
+// Resolved once, before any test overrides HOME: discovery reads it.
+const WORKBENCH = workbenchBundle();
+
+const skip = WORKBENCH ? false : "no Cursor install on this machine";
 
 /** The redirect set, as routes.json lists it. */
 const ROUTES = [
@@ -102,12 +97,13 @@ describe("local RPC surface", { skip }, () => {
   let base;
 
   before(async () => {
-    root = loadRoot({ workbench: workbenchBundle(), extension: bundle });
+    root = loadRoot({ workbench: WORKBENCH });
 
     const home = path.join(tmpRoot, "home");
-    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    const state = path.join(tmpRoot, "state");
+    fs.mkdirSync(state, { recursive: true });
     fs.writeFileSync(
-      path.join(home, ".ccursor", "providers.json"),
+      path.join(state, "providers.json"),
       JSON.stringify({
         providers: [
           {
@@ -123,10 +119,10 @@ describe("local RPC surface", { skip }, () => {
     );
 
     process.env.HOME = home;
-    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state");
+    process.env.CURSOR_BYOK_STATE = state;
 
     const { createServer } = await import("../src/server.js");
-    instance = createServer({ extensionJs: bundle, port: 0 });
+    instance = createServer({ workbench: WORKBENCH, port: 0 });
     const address = await instance.listen();
     base = `http://127.0.0.1:${address.port}`;
   });
@@ -250,7 +246,7 @@ describe("telemetry sink", { skip }, () => {
     process.env.HOME = path.join(tmpRoot, "home-sink");
     process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state-sink");
     const { createServer } = await import("../src/server.js");
-    instance = createServer({ extensionJs: bundle, port: 0 });
+    instance = createServer({ workbench: WORKBENCH, port: 0 });
     const address = await instance.listen();
     base = `http://127.0.0.1:${address.port}`;
   });

@@ -1,17 +1,13 @@
 /**
  * A local copy of the protobuf schema.
  *
- * Two sources exist, and they are not equally good:
+ * One source: Cursor's own client, whose generated code carries the schema it
+ * encodes and decodes with. `apply` reads it out of the workbench bundle once and
+ * writes the result here, so the server starts in milliseconds instead of parsing
+ * 41 MB of JavaScript on every boot.
  *
- *   Cursor's own client    generated from the protocol it speaks today
- *   The BYOK extension     a separate, older artifact
- *
- * So the client wins. `apply` reads it out of the workbench bundle once, writes the
- * result here, and the server loads it from disk. That way the server does not need
- * the extension at all, and does not need to re-parse 41 MB of JavaScript to start.
- *
- * The extension's descriptors remain as a fallback for the case where the workbench
- * bundle cannot be read, and as a second opinion during `doctor`.
+ * Nothing is taken from a third-party extension: that copy is a separate artifact
+ * with a different version, and it is missing methods the client already calls.
  */
 
 import fs from "node:fs";
@@ -19,7 +15,6 @@ import path from "node:path";
 
 import { stateDir } from "../paths.js";
 import { readClientSchema } from "./client-schema.js";
-import { readDescriptors } from "./descriptor.js";
 
 /** Where the copy lives. */
 export const cacheDir = () => path.join(stateDir(), "schema");
@@ -86,80 +81,16 @@ export function saveFromClient(workbenchBundle) {
 }
 
 /**
- * Fall back to the descriptors inside the BYOK extension.
- *
- * Used when the workbench bundle is unreadable. The descriptors are protobuf, so
- * they are stored one file each.
- *
- * @param {string} extensionJs path to the extension bundle
- */
-export function saveFromExtension(extensionJs) {
-  const manifest = readManifest();
-  const stamp = fingerprint(extensionJs);
-
-  if (
-    manifest?.source === "extension" &&
-    manifest.bundle === extensionJs &&
-    manifest.fingerprint === stamp
-  ) {
-    return { source: "extension", ...manifest.stats, reused: true };
-  }
-
-  const descriptors = readDescriptors(extensionJs);
-  if (descriptors.length === 0) throw new Error("no protobuf descriptors found in the extension bundle");
-
-  fs.rmSync(cacheDir(), { recursive: true, force: true });
-  fs.mkdirSync(cacheDir(), { recursive: true });
-
-  const files = descriptors.map((entry, index) => {
-    const name = `descriptor-${index}.bin`;
-    fs.writeFileSync(path.join(cacheDir(), name), entry.raw);
-    return { name, package: entry.file.package, file: entry.file.name };
-  });
-
-  fs.writeFileSync(
-    manifestFile(),
-    `${JSON.stringify(
-      {
-        source: "extension",
-        bundle: extensionJs,
-        fingerprint: stamp,
-        savedAt: new Date().toISOString(),
-        stats: { messages: descriptors.length, files },
-      },
-      null,
-      2,
-    )}\n`,
-  );
-
-  return { source: "extension", messages: descriptors.length, reused: false };
-}
-
-/**
  * Load the cached schema.
  *
- * @returns {{kind: "client", json: object}|{kind: "extension", raws: Buffer[]}|null}
+ * @returns {object|null} the protobufjs JSON tree, or null when there is no copy
  */
 export function load() {
-  const manifest = readManifest();
-  if (!manifest) return null;
-
-  if (manifest.source === "client") {
-    try {
-      return { kind: "client", json: JSON.parse(fs.readFileSync(schemaFile(), "utf8")) };
-    } catch {
-      return null;
-    }
+  try {
+    return JSON.parse(fs.readFileSync(schemaFile(), "utf8"));
+  } catch {
+    return null;
   }
-
-  const files = manifest.stats?.files ?? [];
-  const raws = [];
-  for (const entry of files) {
-    const file = path.join(cacheDir(), entry.name);
-    if (!fs.existsSync(file)) return null;
-    raws.push(fs.readFileSync(file));
-  }
-  return raws.length > 0 ? { kind: "extension", raws } : null;
 }
 
 /** Is the copy usable, and does it still match the file it came from? */

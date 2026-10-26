@@ -8,7 +8,7 @@ help:
 	@echo "seed      seed the model catalog only (Cursor must be closed)"
 	@echo "revert    restore the bundles Cursor shipped"
 	@echo "rule      print the agent rule for multi-file edits"
-	@echo "clean     remove caches"
+	@echo "clean     remove local caches (keeps node_modules)"
 
 test:
 	node --test tests/*.test.js
@@ -32,5 +32,4 @@ rule:
 	node src/cli.js rule
 
 clean:
-	find . -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
-	rm -rf node_modules
+	rm -rf ~/.cursor-byok-patch/schema ~/.cursor-byok-patch/catalog.json
