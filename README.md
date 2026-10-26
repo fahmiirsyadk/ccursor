@@ -2,9 +2,9 @@
 
 Keep **bring-your-own-key** working in the Cursor IDE across updates.
 
-Cursor lets you point its chat and agent at your own OpenAI-compatible endpoint.
-In practice that setup breaks in four separate places, and each one fails with a
-different, unhelpful error. This tool fixes all four, verifies the result, and
+Cursor lets you point its chat and agent at your own [OI]-compatible endpoint.
+In practice that setup breaks in five separate places, and each one fails with a
+different, unhelpful error. This tool fixes all five, verifies the result, and
 re-applies itself when Cursor updates and wipes the patches.
 
 It does **not** unlock Cursor's paid models. You still bring your own API key and
@@ -29,7 +29,7 @@ transport
   router agent-host   : yes
 
 configuration
-  disableHttp2        : True
+  disableHttp2        : true
   routes.json port    : 39831
   providers           : 1 (blink)
   BYOK server         : up
@@ -37,7 +37,7 @@ configuration
 
 ---
 
-## The four failures
+## The five failures
 
 | # | Failure | Symptom |
 |---|---|---|
@@ -45,6 +45,7 @@ configuration
 | 2 | Plan refresh reads as `free` and turns the BYOK toggle off | Model disappears from the picker, only Auto left |
 | 3 | Account policy reports BYOK disabled and resets the toggle | Same as above, silently, on restart |
 | 4 | Port in `routes.json` disagrees with the extension | Requests reach a closed port, nothing responds |
+| 5 | First model fetch beats the extension's startup | Picker shows Cursor's 46-model catalog, your models are gone |
 
 Each is described with evidence in [docs/how-it-works.md](docs/how-it-works.md).
 
@@ -54,9 +55,8 @@ Each is described with evidence in [docs/how-it-works.md](docs/how-it-works.md).
 
 - Linux with an extracted Cursor install (AppImage, `.deb`, `.rpm` — anything with
   a `resources/app` directory)
-- Python 3.9+
-- Node.js 18+ (used by the upstream hook installer and to syntax-check patched bundles)
-- An OpenAI-compatible endpoint and key
+- Node.js 22.5+ (uses the built-in `node:sqlite`; no native modules, no dependencies)
+- An [OI]-compatible endpoint and key
 
 macOS and Windows are not covered by the update and launcher helpers. The patching
 logic itself is platform-independent; `CURSOR_APP_ROOT` lets you point it anywhere.
@@ -66,15 +66,14 @@ logic itself is platform-independent; `CURSOR_APP_ROOT` lets you point it anywhe
 ```bash
 git clone https://github.com/fahmiirsyadk/ccursor ~/dev/ccursor
 cd ~/dev/ccursor
-python3 -m venv .venv
-.venv/bin/pip install -e .
-.venv/bin/cursor-byok apply
+npm link          # or: node src/cli.js <command>
+cursor-byok apply
 ```
 
-Or run it straight from the tree without installing:
+Run straight from the tree without linking:
 
 ```bash
-PYTHONPATH=src python3 -m cursor_byok.cli apply
+node src/cli.js apply
 ```
 
 If Cursor lives somewhere unusual:
@@ -123,27 +122,36 @@ Full field reference: [docs/provider-setup.md](docs/provider-setup.md).
 
 | Command | Purpose |
 |---|---|
-| `apply` | Patch an install. Idempotent. `--dry-run` to preview, `--skip-installer` to skip the upstream hook. |
+| `apply` | Patch an install and seed the catalog. Idempotent. `--dry-run` to preview. |
 | `status` | What is currently in effect, including a live server health check. |
 | `doctor` | Explain why something is broken, and print the next step. |
 | `revert` | Restore the bundles Cursor shipped with. |
-| `run` | Re-apply if an update wiped the patches, then launch Cursor. |
+| `run` | Seed the catalog, re-apply if needed, then launch Cursor. |
 | `update` | Extract a new AppImage into a staging tree, patch it, verify, swap. |
 | `update --rollback` | Go back to the previous tree. |
+| `rule` | Print the agent rule that keeps multi-file edits sane. |
 
 ### Point your launcher at `run`
 
-`run` compares bundle mtimes against a marker file. If Cursor updated itself, the
-patches are gone, the marker no longer matches, and `run` re-applies before
-starting. Wire it into your desktop entry once:
+`run` does three things in order, and the order matters:
+
+1. Re-applies patches if bundle mtimes no longer match the marker (Cursor updated).
+2. Seeds the model catalog into `state.vscdb` **while Cursor is closed**, so the
+   first `AvailableModels` render already has your models.
+3. Launches Cursor detached.
+
+Wire it into your desktop entry once:
 
 ```ini
 [Desktop Entry]
 Name=Cursor
-Exec=/home/you/dev/ccursor/.venv/bin/cursor-byok run %U
+Exec=/home/you/dev/ccursor/src/cli.js run %U
 Type=Application
 StartupWMClass=Cursor
 ```
+
+Seeding is skipped with a warning when Cursor is already running, because Cursor
+would overwrite the row from memory within seconds.
 
 ### Updating Cursor
 
@@ -154,8 +162,9 @@ Use the staging flow instead:
 cursor-byok update --appimage ~/Applications/Cursor.AppImage
 ```
 
-The new version is extracted to a temp directory, patched, syntax-checked, and only
-then swapped in. The previous tree stays at `squashfs-root.old` until the next update.
+The new version is extracted beside the install (same filesystem, so the swap is a
+rename), patched, syntax-checked, and only then swapped in. The previous tree stays
+at `squashfs-root.old` until the next update.
 
 ---
 
@@ -169,13 +178,15 @@ then swapped in. The previous tree stays at `squashfs-root.old` until the next u
 | `~/.config/Cursor/User/settings.json` | `cursor.general.disableHttp2 = true` |
 | `~/.ccursor/routes.json` | `server.port` synchronised |
 | `product.json` | Checksums refreshed for patched bundles |
+| `~/.config/Cursor/User/globalStorage/state.vscdb` | Model catalog seeded (only in `apply`/`run`) |
 
 Local state lives in `~/.cursor-byok-patch`:
 
 ```
-baselines/   pristine bundles, captured before the first write
+baselines/   bundles as Cursor shipped them, captured before the first write
 backups/     timestamped copy before each write
 applied.json bundle mtimes at last successful patch
+catalog.json last catalog computed from providers.json
 ```
 
 `revert` restores from `baselines/`. Delete the directory to start clean.
@@ -196,8 +207,7 @@ applied.json bundle mtimes at last successful patch
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-PYTHONPATH=src .venv/bin/python -m pytest -q
+npm test
 ```
 
 The patch tests build synthetic bundles that reproduce the shape of Cursor's

@@ -1,6 +1,6 @@
 # How it works
 
-Four independent mechanisms break a bring-your-own-key setup in Cursor. They fail
+Five independent mechanisms break a bring-your-own-key setup in Cursor. They fail
 in a specific order, which is why the errors look unrelated.
 
 Findings below come from Cursor 3.27.12 on Linux x86_64.
@@ -86,7 +86,7 @@ The model vanishes from the picker. Only **Auto** remains. No error, no prompt.
 Persisted state after a refresh:
 
 ```text
-use[OI]Key = False
+<useKey> = False
 availableDefaultModels2 = 46 entries, none of them yours
 userAddedModels = []
 ```
@@ -99,7 +99,7 @@ the plan reads as free:
 ```js
 this.subscriptionChangedListener = (prev, next) => {
   <isNotLocalMode>({ isLocalMode: ... }) && next === FREE && prev !== FREE
-    && this.setUse[OI]Key(false)
+    && this.<setKey>(false)
 }
 ```
 
@@ -127,7 +127,7 @@ A settings-application pass resets the key when the account policy reports BYOK 
 disabled:
 
 ```js
-... && use[OI]Key && (
+... && <useKey> && (
   log("... action=disable-openai-key byokDisabled=true ..."),
   storage.setApplicationUserPersistentStorage(key, false)
 )
@@ -162,6 +162,60 @@ both sides agree.
 
 ---
 
+## 5. The first model fetch beats the extension
+
+**Symptom**
+
+The picker shows Cursor's own models — or only **Auto** — even though the BYOK
+server is up and `providers.json` is correct. `status` reports everything healthy.
+A chat that was already open keeps working with the right model; only new chats
+fall back to Auto.
+
+**Evidence**
+
+Startup ordering, from the extension log and process start time:
+
+```text
+14:32:00  Cursor process starts
+14:32:08  BYOK extension binds 127.0.0.1:39831      <- 8 second gap
+```
+
+For those eight seconds the renderer's `AvailableModels` request cannot be
+redirected, so it reaches Cursor's backend and returns the full catalog:
+
+```text
+catalog         : 46 entries (default, grok-4.7, composer-2.5, ...)
+has your model  : False
+userAddedModels : []          <- pruned during reconciliation
+```
+
+Later requests do return the correct single-model catalog:
+
+```text
+[MODEL] availableModels (BYOK only) {"count":1}
+```
+
+but the renderer is usually busy by then (an agent loop, a file watcher), and the
+corrected catalog is never persisted.
+
+**Fix**
+
+Seed `state.vscdb` **before** launching Cursor, while it is closed:
+
+```bash
+cursor-byok run     # seed, then launch
+```
+
+`run` writes `availableDefaultModels2`, `aiSettings.userAddedModels`, and the
+enabled-model lists from `providers.json`. The first render then already has your
+models and there is no race to lose.
+
+The write is refused when Cursor is already running: it holds the state in memory
+and rewrites the row on the next persist, so a live seed is overwritten within
+seconds. Verified — writing while Cursor runs leaves the catalog unchanged.
+
+---
+
 ## Patch strategy
 
 Both workbench patches are structural rather than exact-string replacements:
@@ -169,7 +223,8 @@ Both workbench patches are structural rather than exact-string replacements:
 1. Anchor on a stable marker (`subscriptionChangedListener=`,
    `action=disable-openai-key`).
 2. Search a bounded window for the closing token.
-3. Walk back to the `&&` that introduces the call.
+3. Walk back to the nearest `&&`, and bound the span so a wide search cannot
+   swallow an unrelated expression.
 4. Validate the span — length, no nested calls, expected API name present.
 5. Replace, or report `not-found` and write nothing.
 

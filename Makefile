@@ -1,37 +1,36 @@
-.PHONY: help install test lint status doctor apply revert clean
-
-PY ?= python3
-VENV ?= .venv
-BIN := $(VENV)/bin
+.PHONY: help test status doctor apply revert seed rule clean
 
 help:
-	@echo "install   create venv and install in editable mode"
 	@echo "test      run the test suite"
 	@echo "status    show what is currently patched"
 	@echo "doctor    diagnose a broken setup"
-	@echo "apply     patch the detected Cursor install"
+	@echo "apply     patch the detected Cursor install and seed the catalog"
+	@echo "seed      seed the model catalog only (Cursor must be closed)"
 	@echo "revert    restore the bundles Cursor shipped"
-	@echo "clean     remove venv and caches"
-
-install:
-	$(PY) -m venv $(VENV)
-	$(BIN)/pip install -e '.[dev]'
+	@echo "rule      print the agent rule for multi-file edits"
+	@echo "clean     remove caches"
 
 test:
-	PYTHONPATH=src $(BIN)/python -m pytest -q
+	node --test tests/*.test.js
 
 status:
-	PYTHONPATH=src $(BIN)/python -m cursor_byok.cli status
+	node src/cli.js status
 
 doctor:
-	PYTHONPATH=src $(BIN)/python -m cursor_byok.cli doctor
+	node src/cli.js doctor
 
 apply:
-	PYTHONPATH=src $(BIN)/python -m cursor_byok.cli apply
+	node src/cli.js apply
+
+seed:
+	node -e 'import("./src/seed.js").then(m => m.reportSeed(m.seedCatalog()))'
 
 revert:
-	PYTHONPATH=src $(BIN)/python -m cursor_byok.cli revert
+	node src/cli.js revert
+
+rule:
+	node src/cli.js rule
 
 clean:
-	rm -rf $(VENV) .pytest_cache src/*.egg-info
-	find . -name __pycache__ -type d -prune -exec rm -rf {} +
+	find . -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+	rm -rf node_modules

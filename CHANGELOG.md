@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-26
+
+Ported from Python to Node.js. Zero runtime dependencies, no build step, no
+virtualenv — `node:sqlite` replaces the external driver.
+
+### Added
+
+- **Catalog seeding.** Writes `providers.json` models into Cursor's
+  `state.vscdb` before launch, which removes the startup race that made the
+  picker fall back to Auto. Refuses to run while Cursor is open, because Cursor
+  overwrites the row from memory.
+- `rule` command, printing or appending the agent rule that keeps multi-file
+  `Write` calls from merging two files into one.
+- `docs/tool-calling.md`, documenting the merged-file failure with the transport
+  evidence that rules it out.
+- `doctor` now checks the seeded catalog path and reports a running-Cursor
+  conflict.
+
+### Changed
+
+- Patch anchors now bound the span they rewrite, so a wide backward search cannot
+  swallow an unrelated expression.
+- `revert` keeps baselines, so a later `apply` captures from pristine bytes rather
+  than from a hook-injected bundle.
+- `run` launches Cursor detached, so a desktop launcher does not linger as its
+  parent process.
+
+### Removed
+
+- The Python package, `pyproject.toml`, and the pytest suite.
+
 ## [1.0.0] - 2026-10-26
 
 First release, extracted from a working setup on Cursor 3.27.12 (Linux x86_64).
@@ -23,15 +54,6 @@ First release, extracted from a working setup on Cursor 3.27.12 (Linux x86_64).
 - Structural patch anchors with validation, so an unexpected bundle shape fails
   loudly instead of corrupting the install.
 - Baseline and per-write snapshot storage under `~/.cursor-byok-patch`.
-- Test suite covering both patches, idempotency, anchor misses, discovery, and
-  config synchronisation.
 
-### Known limitations
-
-- Update and launcher helpers target Linux AppImage installs; patching itself is
-  platform-independent via `CURSOR_APP_ROOT`.
-- Models that never stop calling tools need a bounded prompt; this is model
-  behaviour, not a transport issue.
-- Pinned to `@cometix/ccursor@0.0.15`. Newer upstream releases are untested.
-
+[2.0.0]: https://github.com/fahmiirsyadk/ccursor/releases/tag/v2.0.0
 [1.0.0]: https://github.com/fahmiirsyadk/ccursor/releases/tag/v1.0.0

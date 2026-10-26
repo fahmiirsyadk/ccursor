@@ -37,7 +37,7 @@ the picker has nothing to show. `cursor-byok status` reports the provider count.
 **Check the transport first.**
 
 ```bash
-python3 -c "import json,pathlib;print(json.loads(pathlib.Path.home()/'.config/Cursor/User/settings.json').read_text().get('cursor.general.disableHttp2'))"
+node -e 'const fs=require("fs");const p=process.env.HOME+"/.config/Cursor/User/settings.json";console.log(JSON.parse(fs.readFileSync(p,"utf8"))["cursor.general.disableHttp2"])'
 ```
 
 Must print `True`. If it prints `None` or `False`, run `cursor-byok apply`.
@@ -130,17 +130,34 @@ install is still intact.
 2. Confirm the guards still exist in this build:
 
 ```bash
-python3 - <<'EOF'
-import pathlib, os
-root = pathlib.Path(os.environ.get("CURSOR_APP_ROOT", pathlib.Path.home()/"Applications/CursorByok/squashfs-root/usr/share/cursor/resources/app"))
-data = (root/"out/vs/workbench/workbench.desktop.main.js").read_bytes()
-for needle in (b"subscriptionChangedListener=", b"action=disable-openai-key"):
-    print(needle.decode(), "->", data.find(needle))
-EOF
+node -e '
+const fs = require("fs");
+const root = process.env.CURSOR_APP_ROOT ||
+  process.env.HOME + "/Applications/CursorByok/squashfs-root/usr/share/cursor/resources/app";
+const data = fs.readFileSync(root + "/out/vs/workbench/workbench.desktop.main.js", "utf8");
+for (const needle of ["subscriptionChangedListener=", "action=disable-openai-key"]) {
+  console.log(needle, "->", data.indexOf(needle));
+}'
 ```
 
 3. If the markers are gone, the guard moved. Open an issue with the version and the
    surrounding ~200 bytes, and use `cursor-byok revert` until the anchors are updated.
+
+---
+
+## Picker shows only Auto, but the server is healthy
+
+The startup race. Cursor's first model fetch beats the extension by a few seconds
+and the resulting catalog gets persisted.
+
+```bash
+cursor-byok run     # quit Cursor first: seeds, then launches
+```
+
+Seeding is refused while Cursor is running, because Cursor holds the state in
+memory and rewrites the row within seconds. Quit it first.
+
+Details: `docs/how-it-works.md`, failure 5.
 
 ---
 
