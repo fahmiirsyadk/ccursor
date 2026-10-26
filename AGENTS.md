@@ -8,7 +8,8 @@ A CLI that keeps bring-your-own-key working in the Cursor IDE: it neutralises th
 two guards that disable BYOK, forces the transport onto the path the BYOK router can
 intercept, synchronises the port, and seeds the model catalog before launch.
 
-Node.js only. No dependencies, no build step, no transpiler. `node:test` for tests.
+Node.js only. One dependency (`protobufjs`, for Cursor's protobuf schemas), no build
+step, no transpiler. `node:test` for tests.
 
 ## Layout
 
@@ -22,6 +23,9 @@ Node.js only. No dependencies, no build step, no transpiler. `node:test` for tes
 | `src/locate.js` | Finds `resources/app`. |
 | `src/ccursor.js` | Drives the pinned upstream hook installer. |
 | `src/cli.js` | Argument parsing and command dispatch. |
+| `src/server.js` | The local BYOK server: Connect RPC surface. |
+| `src/daemon.js` | Starting, probing and stopping the background server. |
+| `src/agent/` | One agent turn: request parsing, provider call, response encoding. |
 
 ## Rules for changes
 
@@ -42,6 +46,10 @@ this; do not add a bypass that skips the check.
 token that tooling rewrites in transcripts, so a literal copy can be a different
 string than the one on disk. Build such names from parts and pin the bytes in a test
 (`tests/toggle.test.js`).
+
+**The server must own the port before Cursor starts.** The BYOK extension probes
+`/health` on boot and steps aside when something answers as ours. Starting the
+server after Cursor loses that race and the extension serves instead.
 
 **Run `npm test` before committing.** The fixtures reproduce the real shape of
 Cursor's minified output. If a change makes them fail, the change is wrong or the

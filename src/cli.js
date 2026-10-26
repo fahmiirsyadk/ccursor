@@ -9,6 +9,8 @@
  *   doctor   explain why something is not working
  *   revert   restore the bundles Cursor shipped with
  *   run      seed the catalog, re-apply if needed, then launch Cursor
+ *   serve    run the local BYOK server in the foreground
+ *   stop     stop the background server
  *   update   extract, patch and swap in a new AppImage
  *   rule     print the agent rule that keeps tool calls sane
  */
@@ -19,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import * as bundles from "./bundles.js";
 import * as ccursor from "./ccursor.js";
+import * as daemon from "./daemon.js";
 import * as seed from "./seed.js";
 import * as settings from "./settings.js";
 import * as state from "./state.js";
@@ -306,6 +309,13 @@ export async function cmdRun(args = {}) {
   // right catalog. This is what prevents the picker from showing only Auto.
   seed.reportSeed(seed.seedCatalog());
 
+  // The server must own the port before Cursor boots: the BYOK extension probes
+  // it and steps aside when something answers as ours. Starting after Cursor
+  // loses the race and the extension serves instead.
+  const server = await daemon.ensureServer({ appRoot });
+  if (server === "started") detail("local server started");
+  else if (server === "already-running") detail("local server already running");
+
   const binary = cursorBinary(appRoot);
   if (!binary) {
     fail(`cursor launcher not found next to ${appRoot}`);
@@ -322,6 +332,37 @@ export async function cmdRun(args = {}) {
   const child = spawn(binary, args.forward ?? [], { env, stdio: "ignore", detached: true });
   child.unref();
   return 0;
+}
+
+/** Run the server in the foreground. */
+export async function cmdServe(args = {}) {
+  const appRoot = args.app ? path.resolve(args.app) : requireInstall()?.appRoot;
+  if (!appRoot) return 1;
+
+  const port = args.port ? Number(args.port) : DEFAULT_PORT;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    fail(`invalid port: ${args.port}`);
+    return 1;
+  }
+
+  const { start } = await import("./server.js");
+  const instance = await start({ appRoot, port });
+
+  // A terminal Ctrl-C and a SIGTERM from `stop` should both close cleanly.
+  const shutdown = async () => {
+    await instance.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  info(`server running — ${daemon.logPath()} for the background copy`);
+  return new Promise(() => {});
+}
+
+/** Stop the background server. */
+export async function cmdStop() {
+  return daemon.stopServer() ? 0 : 1;
 }
 
 export async function cmdUpdate(args = {}) {
@@ -451,6 +492,10 @@ Commands:
   doctor                diagnose a broken setup
   revert                restore the bundles Cursor shipped
   run [cursor flags]    seed, re-apply if needed, then launch Cursor
+  serve                 run the local BYOK server in the foreground
+    --port <n>          listen on a different port (default 39831)
+    --app <dir>         point at resources/app
+  stop                  stop the background server
   update                extract, patch and swap in a new AppImage
     --appimage <path>   AppImage to install (default ~/Applications/Cursor.AppImage)
     --install-dir <dir> where the patched tree lives
@@ -479,9 +524,22 @@ const VALUE_FLAGS = {
   "--appimage": "appimage",
   "--install-dir": "installDir",
   "--write": "write",
+  "--app": "app",
+  "--port": "port",
 };
 
-const COMMANDS = ["apply", "status", "doctor", "revert", "run", "update", "rule", "alias"];
+const COMMANDS = [
+  "apply",
+  "status",
+  "doctor",
+  "revert",
+  "run",
+  "serve",
+  "stop",
+  "update",
+  "rule",
+  "alias",
+];
 
 export function parseArgs(argv) {
   const args = { forward: [] };
@@ -566,6 +624,10 @@ export async function main(argv = process.argv.slice(2)) {
       return cmdRevert(args);
     case "run":
       return cmdRun(args);
+    case "serve":
+      return cmdServe(args);
+    case "stop":
+      return cmdStop(args);
     case "update":
       return cmdUpdate(args);
     case "rule":
