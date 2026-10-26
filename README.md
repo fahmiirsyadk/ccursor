@@ -91,7 +91,9 @@ Full trace with real log lines: [docs/architecture.md](docs/architecture.md).
 
 - Linux with an extracted Cursor install (AppImage, `.deb`, `.rpm` — anything with
   a `resources/app` directory)
-- Node.js 22.5+ (uses the built-in `node:sqlite`; no native modules, no dependencies)
+- Node.js 22.5+ (uses the built-in `node:sqlite`)
+- One dependency: [`protobufjs`](https://www.npmjs.com/package/protobufjs), for the
+  protobuf schemas. No native modules, no build step.
 - An [OI]-compatible endpoint and key
 
 macOS and Windows are not covered by the update and launcher helpers. The patching
@@ -102,6 +104,7 @@ logic itself is platform-independent; `CURSOR_APP_ROOT` lets you point it anywhe
 ```bash
 git clone https://github.com/fahmiirsyadk/ccursor ~/dev/ccursor
 cd ~/dev/ccursor
+npm install
 npm link          # or: node src/cli.js <command>
 cursor-byok apply
 ```
@@ -246,9 +249,7 @@ catalog.json last catalog computed from providers.json
   writing something broken.
 - **No affiliation.** Not affiliated with Cursor or Anysphere. The hook and router
   come from [@cometix/ccursor](https://www.npmjs.com/package/@cometix/ccursor),
-  which this tool drives, pins by hash, and vendors rather than re-fetching. That
-  package is unauditable (minified JS plus native binaries), which is why replacing
-  it is planned — see [docs/reimplementation.md](docs/reimplementation.md).
+  which this tool drives, pins by hash, and vendors rather than re-fetching.
 
 ## Development
 

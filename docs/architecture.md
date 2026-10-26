@@ -230,6 +230,24 @@ mode, and the measurements that rule out the transport as its cause, are in
 
 ---
 
+## Where the schema comes from
+
+Cursor's protobuf schemas are embedded in its own bundle as base64
+`FileDescriptorProto` blobs. They are read from the installed app at runtime and
+turned into a `protobufjs` root, so encoding and decoding use a maintained library
+and the schema always matches the Cursor version on disk.
+
+```
+extensions/cursor2plus/dist/extension.js
+  └─ 10 FileDescriptorProto blobs
+       ├─ agent.v1        1057 top-level messages, 9 services
+       ├─ aiserver.v1     4133 top-level messages, 65 services
+       ├─ anyrun.v1, internapi.v1
+       └─ google.protobuf timestamp, duration, any, struct · google.rpc status
+```
+
+`node tools/extract-schema.js --message AgentRunRequest` prints any message.
+
 ## Where the model catalog comes from
 
 Two independent sources, and they can disagree:

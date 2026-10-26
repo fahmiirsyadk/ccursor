@@ -38,5 +38,8 @@
   "bugs": {
     "url": "https://github.com/fahmiirsyadk/ccursor/issues"
   },
-  "homepage": "https://github.com/fahmiirsyadk/ccursor"
+  "homepage": "https://github.com/fahmiirsyadk/ccursor",
+  "dependencies": {
+    "protobufjs": "^8.8.1"
+  }
 }

@@ -39,10 +39,6 @@ None of that can be reviewed, so it is treated as untrusted:
 - a mismatch fails loudly instead of installing something else
 - `cursor-byok apply` never falls back to `npx`, which would re-fetch unverified bytes
 
-Replacing that package with our own code is in progress. The protobuf schema turned
-out to be recoverable from Cursor's own bundle, which makes it feasible; see
-[docs/reimplementation.md](docs/reimplementation.md).
-
 The installer also patches Cursor's extension-signature check globally, which
 disables integrity verification for ten built-in extensions where we modify one.
 
