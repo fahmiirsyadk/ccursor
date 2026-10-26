@@ -13,7 +13,7 @@
 import { conversation, modelId } from "./request.js";
 import { systemPrompt } from "./prompt.js";
 import { resolveModel, stream } from "./provider.js";
-import { EXEC_CASES, TOOL_TYPES, findTool, providerTools, renderResult } from "./tools.js";
+import { EXEC_CASES, TOOL_TYPES, findTool, providerTools, renderResult, toToolResult } from "./tools.js";
 import { execServerMessage, toolCallCompleted, toolCallStarted, waitForExec } from "./exec.js";
 import {
   heartbeat,
@@ -62,14 +62,158 @@ async function* withHeartbeat(events, root) {
   }
 }
 
+/**
+ * Copy a decoded message into plain objects.
+ *
+ * protobufjs decodes into class instances whose oneof accessors live on the
+ * prototype. Re-encoding such an instance as a *different* message type silently
+ * drops oneof fields, because the encoder checks for own properties. Converting
+ * first keeps every field that was actually set.
+ */
+function plain(value) {
+  if (Array.isArray(value)) return value.map(plain);
+  if (Buffer.isBuffer(value)) return value;
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, inner] of Object.entries(value)) out[key] = plain(inner);
+    return out;
+  }
+  return value;
+}
+
 /** Which result variant the editor sent back. */
 function execOutcome(exec) {
   for (const [key, value] of Object.entries(exec ?? {})) {
     if (!key.endsWith("_result") && !key.endsWith("_stream")) continue;
     if (value === undefined || value === null) continue;
-    return { case: key, value };
+    return { case: key, value: plain(value) };
   }
   return null;
+}
+
+/**
+ * Send one exec request and wait for its result.
+ *
+ * Streaming variants arrive first; the final `*_result` is the one to keep.
+ */
+async function* execOnce({ root, requestId, execId, execCase, execName, value }) {
+  yield execServerMessage(root, { id: execId, execId: execName, caseName: execCase, value });
+
+  for (;;) {
+    const reply = await waitForExec(requestId, execId);
+    if (!reply) return null;
+
+    const outcome = execOutcome(reply);
+    if (!outcome) continue;
+    if (outcome.case.endsWith("_stream")) continue;
+    return outcome.value;
+  }
+}
+
+/** Map a read failure onto the edit result vocabulary. */
+function readFailureToEdit(result) {
+  if (!result) return { error: { message: "the editor did not answer the read" } };
+  if (result.file_not_found) return { file_not_found: result.file_not_found };
+  if (result.permission_denied) return { read_permission_denied: result.permission_denied };
+  if (result.rejected) return { rejected: result.rejected };
+  if (result.invalid_file) return { error: { message: "the file is not text" } };
+  return result;
+}
+
+/** Line counts for the edit summary, without a full diff algorithm. */
+function lineDelta(before, after) {
+  const count = (text) => {
+    const map = new Map();
+    for (const line of text.split("\n")) map.set(line, (map.get(line) ?? 0) + 1);
+    return map;
+  };
+
+  const left = count(before);
+  const right = count(after);
+  let added = 0;
+  let removed = 0;
+
+  for (const [line, n] of right) added += Math.max(0, n - (left.get(line) ?? 0));
+  for (const [line, n] of left) removed += Math.max(0, n - (right.get(line) ?? 0));
+  return { added, removed };
+}
+
+/**
+ * Edit is read-then-write.
+ *
+ * The editor has no "replace" exec, so the new content is computed here and written
+ * in full. That also means an ambiguous old_string is caught before anything is
+ * written, which is the behaviour the tool description promises.
+ */
+async function* editViaReadWrite({ root, requestId, allocateExecId, args, callId }) {
+  const path = args.path;
+  const oldString = args.old_string;
+  const newString = args.new_string;
+
+  if (oldString.length === 0) {
+    return { error: { message: "Edit needs old_string. Use Write to create a file." } };
+  }
+
+  const read = yield* execOnce({
+    root,
+    requestId,
+    execId: allocateExecId(),
+    execCase: "readArgs",
+    execName: `${callId}-read`,
+    value: { path, tool_call_id: callId },
+  });
+
+  if (!read || !read.success) return readFailureToEdit(read);
+
+  const before = read.success.content ?? "";
+  const occurrences = before.split(oldString).length - 1;
+
+  if (occurrences === 0) {
+    return { error: { message: `old_string was not found in ${path}. Read the file again.` } };
+  }
+  if (occurrences > 1 && !args.replace_all) {
+    return {
+      error: {
+        message: `old_string appears ${occurrences} times in ${path}. Pass replace_all, or include more context so it is unique.`,
+      },
+    };
+  }
+
+  const at = before.indexOf(oldString);
+  const after = args.replace_all
+    ? before.split(oldString).join(newString)
+    : before.slice(0, at) + newString + before.slice(at + oldString.length);
+
+  const write = yield* execOnce({
+    root,
+    requestId,
+    execId: allocateExecId(),
+    execCase: "writeArgs",
+    execName: `${callId}-write`,
+    value: {
+      path,
+      file_text: after,
+      stream_content: after,
+      encoding_hint: "utf8",
+      tool_call_id: callId,
+    },
+  });
+
+  if (!write) return { error: { message: "the editor did not answer the write" } };
+  if (!write.success) return write;
+
+  const { added, removed } = lineDelta(before, after);
+  return {
+    success: {
+      path,
+      lines_added: added,
+      lines_removed: removed,
+      diff_string: "",
+      before_full_file_content: before,
+      after_full_file_content: after,
+      message: "",
+    },
+  };
 }
 
 /**
@@ -77,34 +221,32 @@ function execOutcome(exec) {
  *
  * Yields the frames the UI needs and returns what the model should be told.
  */
-async function* runTool({ root, requestId, execId, tool, input, callId, modelCallId }) {
+async function* runTool({ root, requestId, allocateExecId, tool, input, callId, modelCallId }) {
   const toolType = TOOL_TYPES[tool.name];
-  const execCase = EXEC_CASES[tool.name];
-  const args = tool.buildArgs(input, callId);
+  const args = tool.startedArgs ? tool.startedArgs(input, callId) : tool.buildArgs(input, callId);
 
   yield toolCallStarted(root, { callId, toolType, args, modelCallId });
-  yield execServerMessage(root, {
-    id: execId,
-    execId: `${callId}-${tool.name.toLowerCase()}`,
-    caseName: execCase,
-    value: args,
-  });
 
-  let result = null;
-  for (;;) {
-    const reply = await waitForExec(requestId, execId);
-    if (!reply) return { text: "Error: the editor did not answer this tool call.", result: null };
+  const execArgs = tool.buildArgs(input, callId);
+  const result =
+    tool.name === "Edit"
+      ? yield* editViaReadWrite({ root, requestId, allocateExecId, args: execArgs, callId })
+      : yield* execOnce({
+          root,
+          requestId,
+          execId: allocateExecId(),
+          execCase: EXEC_CASES[tool.name],
+          execName: `${callId}-${tool.name.toLowerCase()}`,
+          value: execArgs,
+        });
 
-    const outcome = execOutcome(reply);
-    if (!outcome) continue;
-    // Streaming variants arrive first; the final `*_result` is the one to keep.
-    if (outcome.case.endsWith("_stream")) continue;
-    result = outcome.value;
-    break;
+  if (!result) {
+    return { text: "Error: the editor did not answer this tool call.", result: null };
   }
 
   const text = renderResult(tool.name, result);
-  yield toolCallCompleted(root, { callId, toolType, args, result, modelCallId });
+  const uiResult = tool.name === "Edit" ? result : toToolResult(tool.name, result);
+  yield toolCallCompleted(root, { callId, toolType, args, result: uiResult, modelCallId });
 
   return { text, result };
 }
@@ -146,7 +288,11 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
 
   const started = Date.now();
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-  let execId = 0;
+  let execCounter = 0;
+  const allocateExecId = () => {
+    execCounter += 1;
+    return execCounter;
+  };
   let stepId = 1;
 
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
@@ -262,11 +408,10 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
         continue;
       }
 
-      execId += 1;
       const outcome = yield* runTool({
         root,
         requestId,
-        execId,
+        allocateExecId,
         tool,
         input: parseArguments(call.arguments),
         callId: call.id,

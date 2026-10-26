@@ -52,14 +52,14 @@ describe("tool catalog", () => {
 
   it("builds Read arguments", () => {
     const args = findTool("Read").buildArgs({ path: "/a", offset: 2, limit: 10 }, "c1");
-    assert.deepEqual(args, { path: "/a", toolCallId: "c1", offset: 2, limit: 10 });
+    assert.deepEqual(args, { path: "/a", tool_call_id: "c1", offset: 2, limit: 10 });
   });
 
   it("normalises line endings before a write", () => {
     const args = findTool("Write").buildArgs({ path: "/a", contents: "a\r\nb\rc" }, "c1");
-    assert.equal(args.fileText, "a\nb\nc");
-    assert.equal(args.streamContent, "a\nb\nc");
-    assert.equal(args.encodingHint, "utf8");
+    assert.equal(args.file_text, "a\nb\nc");
+    assert.equal(args.stream_content, "a\nb\nc");
+    assert.equal(args.encoding_hint, "utf8");
   });
 
   it("turns a glob into a recursive pattern", () => {
@@ -287,6 +287,11 @@ describe("tool loop", { skip }, () => {
       "reported the tool result",
     );
 
+    const completed = seen.find((message) => message.interaction_update?.tool_call_completed);
+    const readCall = completed.interaction_update.tool_call_completed.tool_call.read_tool_call;
+    assert.equal(readCall.args?.path, "/tmp/example.txt");
+    assert.equal(readCall.result?.success?.content, "hello", "the result rides along for the UI");
+
     const text = seen
       .map((message) => message.interaction_update?.text_delta?.text)
       .filter(Boolean)
@@ -300,5 +305,194 @@ describe("tool loop", { skip }, () => {
     assert.equal(toolMessage.content, "hello");
     assert.equal(toolMessage.tool_call_id, "call-1");
     assert.ok(second.tools.some((tool) => tool.function.name === "Read"));
+  });
+});
+
+describe("tool result mapping", () => {
+  it("maps a write result onto the edit result the UI expects", async () => {
+    const { toToolResult } = await import("../src/agent/tools.js");
+    const mapped = toToolResult("Write", {
+      success: { path: "/a", lines_created: 3, file_content_after_write: "body" },
+    });
+
+    assert.equal(mapped.success.path, "/a");
+    assert.equal(mapped.success.lines_added, 3);
+    assert.equal(mapped.success.after_full_file_content, "body");
+  });
+
+  it("maps grep file results onto a glob result", async () => {
+    const { toToolResult } = await import("../src/agent/tools.js");
+    const mapped = toToolResult("Glob", {
+      success: { pattern: "**/*.ts", path: "/a", workspace_results: { files: { files: ["/a/x.ts"] } } },
+    });
+
+    assert.deepEqual(mapped.success.files, ["/a/x.ts"]);
+    assert.equal(mapped.success.total_files, 1);
+  });
+
+  it("passes an error through untouched", async () => {
+    const { toToolResult } = await import("../src/agent/tools.js");
+    assert.deepEqual(toToolResult("Write", { rejected: {} }), { rejected: {} });
+  });
+});
+
+describe("edit flow", { skip }, () => {
+  let stub;
+  let instance;
+  let root;
+  let base;
+
+  before(async () => {
+    root = loadRoot(bundle);
+    stub = await startStubProvider([
+      toolCallChunks("edit-1", "Edit", {
+        path: "/tmp/edit-me.txt",
+        old_string: "beta",
+        new_string: "gamma",
+      }),
+      textChunks("Renamed."),
+    ]);
+
+    const home = path.join(tmpRoot, "home-edit");
+    fs.mkdirSync(path.join(home, ".ccursor"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".ccursor", "providers.json"),
+      JSON.stringify({
+        providers: [
+          {
+            id: "stub",
+            name: "Stub",
+            type: "openai-chat",
+            baseUrl: `http://127.0.0.1:${stub.address().port}/v1`,
+            auth: { kind: "apiKey", value: "k" },
+            models: [{ id: "stub/model", apiModel: "stub-model" }],
+          },
+        ],
+      }),
+    );
+
+    process.env.HOME = home;
+    process.env.CURSOR_BYOK_STATE = path.join(tmpRoot, "state-edit");
+
+    const { createServer } = await import("../src/server.js");
+    instance = createServer({ extensionJs: bundle, port: 0 });
+    const address = await instance.listen();
+    base = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    await instance?.close();
+    await new Promise((resolve) => stub.close(resolve));
+  });
+
+  it("reads the file, computes the replacement, then writes it", async () => {
+    const client = root.lookupType("agent.v1.AgentClientMessage");
+    const appendType = root.lookupType("aiserver.v1.BidiAppendRequest");
+    const requestId = "edit-run-1";
+
+    await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
+      method: "POST",
+      headers: { "content-type": "application/proto" },
+      body: appendType.encode(
+        appendType.fromObject({
+          request_id: { request_id: requestId },
+          data_binary: client
+            .encode({
+              run_request: {
+                conversation_id: "conv-edit",
+                requested_model: { model_id: "stub/model" },
+                action: { user_message_action: { user_message: { text: "rename beta" } } },
+                conversation_state: { mode: 1 },
+              },
+            })
+            .finish(),
+        }),
+      ).finish(),
+    });
+
+    const idType = root.lookupType("aiserver.v1.BidiRequestId");
+    const response = await fetch(`${base}/agent.v1.AgentService/RunSSE`, {
+      method: "POST",
+      headers: { "content-type": "application/connect+proto" },
+      body: idType.encode(idType.fromObject({ request_id: requestId })).finish(),
+    });
+
+    const ServerMessage = root.lookupType("agent.v1.AgentServerMessage");
+    const reader = new FrameReader();
+    const cases = [];
+    let written = null;
+    let completed = null;
+
+    for await (const chunk of response.body) {
+      for (const item of reader.push(Buffer.from(chunk))) {
+        if (item.flags === 2) continue;
+        const message = ServerMessage.decode(item.payload);
+
+        if (message.interaction_update?.tool_call_completed) {
+          completed = message.interaction_update.tool_call_completed;
+        }
+
+        const exec = message.exec_server_message;
+        if (!exec) continue;
+
+        if (exec.read_args) {
+          cases.push("read");
+          await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
+            method: "POST",
+            headers: { "content-type": "application/proto" },
+            body: appendType.encode(
+              appendType.fromObject({
+                request_id: { request_id: requestId },
+                data_binary: client
+                  .encode({
+                    exec_client_message: {
+                      id: exec.id,
+                      exec_id: exec.exec_id,
+                      read_result: {
+                        success: { path: exec.read_args.path, content: "alpha\nbeta\n", total_lines: 2 },
+                      },
+                    },
+                  })
+                  .finish(),
+              }),
+            ).finish(),
+          });
+        }
+
+        if (exec.write_args) {
+          cases.push("write");
+          written = exec.write_args.file_text;
+          await fetch(`${base}/aiserver.v1.BidiService/BidiAppend`, {
+            method: "POST",
+            headers: { "content-type": "application/proto" },
+            body: appendType.encode(
+              appendType.fromObject({
+                request_id: { request_id: requestId },
+                data_binary: client
+                  .encode({
+                    exec_client_message: {
+                      id: exec.id,
+                      exec_id: exec.exec_id,
+                      write_result: {
+                        success: { path: exec.write_args.path, lines_created: 2, file_size: 12 },
+                      },
+                    },
+                  })
+                  .finish(),
+              }),
+            ).finish(),
+          });
+        }
+      }
+    }
+
+    assert.deepEqual(cases, ["read", "write"], "read first, then write");
+    assert.equal(written, "alpha\ngamma\n", "the replacement is computed here");
+
+    const edit = completed.tool_call.edit_tool_call;
+    assert.equal(edit.args.path, "/tmp/edit-me.txt");
+    assert.equal(edit.result.success.after_full_file_content, "alpha\ngamma\n");
+    assert.equal(edit.result.success.lines_added, 1);
+    assert.equal(edit.result.success.lines_removed, 1);
   });
 });

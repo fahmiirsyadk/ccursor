@@ -26,7 +26,7 @@ export const EXEC_CASES = {
   Write: "writeArgs",
   Edit: "writeArgs",
   Delete: "deleteArgs",
-  Shell: "shellStreamArgs",
+  Shell: "shellArgs",
   Grep: "grepArgs",
   Glob: "grepArgs",
 };
@@ -63,9 +63,10 @@ export const TOOLS = [
         limit: { type: "integer", description: "How many lines to read." },
       },
     },
+    startedArgs: (input) => ({ path: String(input.path ?? "") }),
     buildArgs: (input, toolCallId) => ({
       path: String(input.path ?? ""),
-      toolCallId,
+      tool_call_id: toolCallId,
       ...(typeof input.offset === "number" ? { offset: input.offset } : {}),
       ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
     }),
@@ -83,14 +84,15 @@ export const TOOLS = [
         contents: { type: "string", description: "Full contents to write." },
       },
     },
+    startedArgs: (input) => ({ path: String(input.path ?? "") }),
     buildArgs: (input, toolCallId) => {
       const text = normaliseText(input.contents ?? "");
       return {
         path: String(input.path ?? ""),
-        fileText: text,
-        streamContent: text,
-        encodingHint: "utf8",
-        toolCallId,
+        file_text: text,
+        stream_content: text,
+        encoding_hint: "utf8",
+        tool_call_id: toolCallId,
       };
     },
   },
@@ -110,12 +112,18 @@ export const TOOLS = [
         replace_all: { type: "boolean", description: "Replace every occurrence." },
       },
     },
+    // EditToolCall.args only carries the path and the new text, for the diff preview.
+    startedArgs: (input) => ({
+      path: String(input.path ?? ""),
+      stream_content: normaliseText(input.new_string ?? ""),
+    }),
+    // The editor is told to read, then to write: there is no "replace" exec.
     buildArgs: (input, toolCallId) => ({
       path: String(input.path ?? ""),
-      oldString: String(input.old_string ?? ""),
-      newString: String(input.new_string ?? ""),
-      replaceAll: input.replace_all === true,
-      toolCallId,
+      old_string: String(input.old_string ?? ""),
+      new_string: normaliseText(input.new_string ?? ""),
+      replace_all: input.replace_all === true,
+      tool_call_id: toolCallId,
     }),
   },
 
@@ -129,9 +137,10 @@ export const TOOLS = [
         path: { type: "string", description: "Absolute path of the file." },
       },
     },
+    startedArgs: (input, toolCallId) => ({ path: String(input.path ?? ""), tool_call_id: toolCallId }),
     buildArgs: (input, toolCallId) => ({
       path: String(input.path ?? ""),
-      toolCallId,
+      tool_call_id: toolCallId,
     }),
   },
 
@@ -154,25 +163,25 @@ export const TOOLS = [
       const words = command.trim().split(/\s+/).filter(Boolean);
       return {
         command,
-        workingDirectory: String(input.workingDirectory ?? input.cwd ?? ""),
+        working_directory: String(input.working_directory ?? input.workingDirectory ?? input.cwd ?? ""),
         timeout: Number(input.timeout ?? 30_000),
-        toolCallId,
+        tool_call_id: toolCallId,
         description: typeof input.description === "string" ? input.description : "",
-        simpleCommands: simpleCommands(command),
-        parsingResult:
+        simple_commands: simpleCommands(command),
+        parsing_result:
           words.length > 0
             ? {
-                executableCommands: [
+                executable_commands: [
                   {
                     name: words[0],
-                    fullText: command,
+                    full_text: command,
                     args: words.slice(1).map((value) => ({ type: "word", value })),
                   },
                 ],
               }
             : undefined,
-        timeoutBehavior: 2,
-        hardTimeout: 86_400_000,
+        timeout_behavior: 2,
+        hard_timeout: 86_400_000,
       };
     },
   },
@@ -206,15 +215,15 @@ export const TOOLS = [
       ...(input.path ? { path: String(input.path) } : {}),
       ...(typeof input.glob === "string" ? { glob: input.glob } : {}),
       ...(typeof input.type === "string" ? { type: input.type } : {}),
-      outputMode: typeof input.output_mode === "string" ? input.output_mode : "content",
-      ...(typeof input["-i"] === "boolean" ? { caseInsensitive: input["-i"] } : {}),
-      ...(typeof input["-A"] === "number" ? { contextAfter: input["-A"] } : {}),
-      ...(typeof input["-B"] === "number" ? { contextBefore: input["-B"] } : {}),
+      output_mode: typeof input.output_mode === "string" ? input.output_mode : "content",
+      ...(typeof input["-i"] === "boolean" ? { case_insensitive: input["-i"] } : {}),
+      ...(typeof input["-A"] === "number" ? { context_after: input["-A"] } : {}),
+      ...(typeof input["-B"] === "number" ? { context_before: input["-B"] } : {}),
       ...(typeof input["-C"] === "number" ? { context: input["-C"] } : {}),
       ...(typeof input.multiline === "boolean" ? { multiline: input.multiline } : {}),
-      ...(typeof input.head_limit === "number" ? { headLimit: input.head_limit } : {}),
+      ...(typeof input.head_limit === "number" ? { head_limit: input.head_limit } : {}),
       ...(typeof input.offset === "number" ? { offset: input.offset } : {}),
-      toolCallId,
+      tool_call_id: toolCallId,
     }),
   },
 
@@ -231,13 +240,17 @@ export const TOOLS = [
         target_directory: { type: "string", description: "Directory to search in." },
       },
     },
+    startedArgs: (input) => ({
+      glob_pattern: String(input.glob_pattern ?? input.pattern ?? ""),
+      target_directory: String(input.target_directory ?? ""),
+    }),
     buildArgs: (input, toolCallId) => {
       const pattern = String(input.glob_pattern ?? input.pattern ?? "");
       return {
         pattern: pattern.startsWith("**/") ? pattern : `**/${pattern}`,
         ...(input.target_directory ? { path: String(input.target_directory) } : {}),
-        outputMode: "files_with_matches",
-        toolCallId,
+        output_mode: "files_with_matches",
+        tool_call_id: toolCallId,
       };
     },
   },
@@ -273,6 +286,51 @@ function grepContentText(success) {
     }
   }
   return lines.join("\n");
+}
+
+/**
+ * Convert an exec result into the result type the UI expects.
+ *
+ * The two are not the same message: the editor reports what it did (WriteResult),
+ * while the interaction update describes the call (EditToolCall.result). Passing one
+ * where the other belongs silently loses fields, so each tool names its mapping.
+ */
+export function toToolResult(toolName, result) {
+  if (!result) return null;
+  const outcome = Object.keys(result)[0];
+  const value = result[outcome] ?? {};
+
+  switch (toolName) {
+    case "Write":
+    case "Edit":
+      if (outcome !== "success") return result;
+      return {
+        success: {
+          path: value.path ?? "",
+          lines_added: value.lines_created ?? 0,
+          lines_removed: 0,
+          diff_string: "",
+          after_full_file_content: value.file_content_after_write ?? "",
+          message: "",
+        },
+      };
+
+    case "Glob": {
+      if (outcome !== "success") return result;
+      const files = value.workspace_results?.files?.files ?? value.files ?? [];
+      return {
+        success: {
+          pattern: value.pattern ?? "",
+          path: value.path ?? "",
+          files,
+          total_files: files.length,
+        },
+      };
+    }
+
+    default:
+      return result;
+  }
 }
 
 /**
