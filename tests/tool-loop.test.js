@@ -16,7 +16,7 @@ import { after, before, describe, it } from "node:test";
 import { discover } from "../src/locate.js";
 import { loadRoot } from "../src/proto/schema.js";
 import { FrameReader } from "../src/proto/connect.js";
-import { stream, unary } from "./helpers/rpc.js";
+import { bidiAppendBody, stream, unary } from "./helpers/rpc.js";
 import { TOOL_TYPES, EXEC_CASES, findTool, providerTools, renderResult } from "../src/agent/tools.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-byok-tools-"));
@@ -206,7 +206,6 @@ describe("tool loop", { skip }, () => {
 
   it("asks the editor to run the tool and feeds the result back", async () => {
     const client = root.lookupType("agent.v1.AgentClientMessage");
-    const appendType = root.lookupType("aiserver.v1.BidiAppendRequest");
     const requestId = "tool-run-1";
 
     const runRequest = {
@@ -219,12 +218,7 @@ describe("tool loop", { skip }, () => {
     const appended = await unary(
       base,
       "aiserver.v1.BidiService/BidiAppend",
-      appendType.encode(
-        appendType.fromObject({
-          request_id: { request_id: requestId },
-          data_binary: client.encode(client.fromObject({ run_request: runRequest })).finish(),
-        }),
-      ).finish(),
+      bidiAppendBody(root, requestId, { run_request: runRequest }),
     );
     assert.equal(appended.status, 200);
 
@@ -255,22 +249,15 @@ describe("tool loop", { skip }, () => {
           await unary(
             base,
             "aiserver.v1.BidiService/BidiAppend",
-            appendType.encode(
-              appendType.fromObject({
-                request_id: { request_id: requestId },
-                data_binary: client
-                  .encode({
-                    exec_client_message: {
-                      id: exec.id,
-                      exec_id: exec.exec_id,
-                      read_result: {
-                        success: { content: "hello", path: "/tmp/example.txt", total_lines: 1 },
-                      },
-                    },
-                  })
-                  .finish(),
-              }),
-            ).finish(),
+            bidiAppendBody(root, requestId, {
+              exec_client_message: {
+                id: exec.id,
+                exec_id: exec.exec_id,
+                read_result: {
+                  success: { content: "hello", path: "/tmp/example.txt", total_lines: 1 },
+                },
+              },
+            }),
           );
         }
       }
@@ -388,27 +375,19 @@ describe("edit flow", { skip }, () => {
 
   it("reads the file, computes the replacement, then writes it", async () => {
     const client = root.lookupType("agent.v1.AgentClientMessage");
-    const appendType = root.lookupType("aiserver.v1.BidiAppendRequest");
     const requestId = "edit-run-1";
 
     await unary(
       base,
       "aiserver.v1.BidiService/BidiAppend",
-      appendType.encode(
-        appendType.fromObject({
-          request_id: { request_id: requestId },
-          data_binary: client
-            .encode({
-              run_request: {
-                conversation_id: "conv-edit",
-                requested_model: { model_id: "stub/model" },
-                action: { user_message_action: { user_message: { text: "rename beta" } } },
-                conversation_state: { mode: 1 },
-              },
-            })
-            .finish(),
-        }),
-      ).finish(),
+      bidiAppendBody(root, requestId, {
+        run_request: {
+          conversation_id: "conv-edit",
+          requested_model: { model_id: "stub/model" },
+          action: { user_message_action: { user_message: { text: "rename beta" } } },
+          conversation_state: { mode: 1 },
+        },
+      }),
     );
 
     const idType = root.lookupType("aiserver.v1.BidiRequestId");
@@ -441,22 +420,15 @@ describe("edit flow", { skip }, () => {
           await unary(
             base,
             "aiserver.v1.BidiService/BidiAppend",
-            appendType.encode(
-              appendType.fromObject({
-                request_id: { request_id: requestId },
-                data_binary: client
-                  .encode({
-                    exec_client_message: {
-                      id: exec.id,
-                      exec_id: exec.exec_id,
-                      read_result: {
-                        success: { path: exec.read_args.path, content: "alpha\nbeta\n", total_lines: 2 },
-                      },
-                    },
-                  })
-                  .finish(),
-              }),
-            ).finish(),
+            bidiAppendBody(root, requestId, {
+              exec_client_message: {
+                id: exec.id,
+                exec_id: exec.exec_id,
+                read_result: {
+                  success: { path: exec.read_args.path, content: "alpha\nbeta\n", total_lines: 2 },
+                },
+              },
+            }),
           );
         }
 
@@ -466,22 +438,15 @@ describe("edit flow", { skip }, () => {
           await unary(
             base,
             "aiserver.v1.BidiService/BidiAppend",
-            appendType.encode(
-              appendType.fromObject({
-                request_id: { request_id: requestId },
-                data_binary: client
-                  .encode({
-                    exec_client_message: {
-                      id: exec.id,
-                      exec_id: exec.exec_id,
-                      write_result: {
-                        success: { path: exec.write_args.path, lines_created: 2, file_size: 12 },
-                      },
-                    },
-                  })
-                  .finish(),
-              }),
-            ).finish(),
+            bidiAppendBody(root, requestId, {
+              exec_client_message: {
+                id: exec.id,
+                exec_id: exec.exec_id,
+                write_result: {
+                  success: { path: exec.write_args.path, lines_created: 2, file_size: 12 },
+                },
+              },
+            }),
           );
         }
       }

@@ -15,7 +15,10 @@
  * needs no plan, no seat, and no data leaving the machine.
  */
 
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 
 import { buildAvailableModels, catalogFromProviders } from "./catalog.js";
 import { loadRoot } from "./proto/schema.js";
@@ -36,6 +39,9 @@ import { runTurn } from "./agent/turn.js";
 import { HANDLERS, REST } from "./local/api.js";
 
 const UNAVAILABLE = 12; // Connect code for unimplemented
+
+/** How long RunSSE waits for the matching BidiAppend before giving up. */
+const RUN_REQUEST_WAIT_MS = 30_000;
 const INTERNAL = 13;
 
 const AGENT_SERVICE = "agent.v1.AgentService";
@@ -218,12 +224,22 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       try {
-        const body = handler(decompress(Buffer.concat(chunks), requestEncoding(req.headers)));
+        const raw = Buffer.concat(chunks);
+        const encoding = requestEncoding(req.headers);
+        let body;
+        try {
+          body = decompress(raw, encoding);
+        } catch (error) {
+          dumpFailure(req, raw, encoding, error.message);
+          throw error;
+        }
+        if (process.env.CURSOR_BYOK_DUMP) dumpBody(req, raw, body, encoding);
+        const out = handler(body);
         res.writeHead(200, {
           "content-type": "application/proto",
-          "content-length": body.length,
+          "content-length": out.length,
         });
-        res.end(body);
+        res.end(out);
       } catch (error) {
         stats.errors += 1;
         fail(`${req.url} failed: ${error.message}`);
@@ -231,6 +247,34 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
         res.end(errorBody(INTERNAL, error.message));
       }
     });
+  }
+
+  /** Keep a request we could not read, so the shape can be inspected later. */
+  function dumpFailure(req, raw, encoding, message) {
+    try {
+      const dir = path.join(os.tmpdir(), "byok-dump");
+      fs.mkdirSync(dir, { recursive: true });
+      const name = `${Date.now()}-${req.url.split("/").pop()}`;
+      fs.writeFileSync(path.join(dir, `${name}.bin`), raw);
+      fs.writeFileSync(
+        path.join(dir, `${name}.json`),
+        JSON.stringify({ url: req.url, headers: req.headers, encoding, message, head: raw.subarray(0, 24).toString("hex") }, null, 2),
+      );
+    } catch {
+      /* diagnostics must never break the reply */
+    }
+  }
+
+  function dumpBody(req, raw, body, encoding) {
+    try {
+      const dir = path.join(os.tmpdir(), "byok-dump");
+      fs.mkdirSync(dir, { recursive: true });
+      const name = `${Date.now()}-${req.url.split("/").pop()}-ok`;
+      fs.writeFileSync(path.join(dir, `${name}.raw`), raw);
+      fs.writeFileSync(path.join(dir, `${name}.decoded`), body);
+    } catch {
+      /* ignore */
+    }
   }
 
   /** A stream with nothing in it, for RPCs we answer but do not stream. */
@@ -247,11 +291,27 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
     const requestId = append.request_id?.request_id ?? "";
     if (!requestId) throw new Error("BidiAppend without request_id");
 
+    // `data` is hex-encoded, not base64: 66811 bytes arrive as a 133622-character
+    // string. `data_binary` is the raw form, used when the payload is not text.
     const payload = append.data_binary?.length
       ? Buffer.from(append.data_binary)
-      : Buffer.from(append.data ?? "", "base64");
+      : Buffer.from(append.data ?? "", "hex");
 
-    const message = decode("agent.v1.AgentClientMessage", payload);
+    if (payload.length === 0) {
+      detail(`BidiAppend ${requestId.slice(0, 8)} empty`);
+      return;
+    }
+
+    let message;
+    try {
+      message = decode("agent.v1.AgentClientMessage", payload);
+    } catch (error) {
+      // A frame we cannot read is not worth failing the whole turn over: the
+      // client retries, and a heartbeat that fails to parse changes nothing.
+      warn(`BidiAppend ${requestId.slice(0, 8)} undecodable: ${error.message}`);
+      return;
+    }
+
     stats.bidiAppend += 1;
 
     const kind = Object.keys(message).find((key) => {
@@ -303,7 +363,7 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
         let queued = "";
         let runRequest = null;
         for (;;) {
-          const message = await next(requestId, 60_000);
+          const message = await next(requestId, RUN_REQUEST_WAIT_MS);
           if (!message) break;
 
           const queuedText = message.conversation_action?.user_message_action?.user_message?.text;
@@ -316,8 +376,9 @@ export function createServer({ extensionJs, port = DEFAULT_PORT, host = "127.0.0
         }
 
         if (!runRequest) {
+          // Leave the session alone: the client retries BidiAppend, and the next
+          // RunSSE must still find whatever landed in the queue.
           res.end(endFrame({ error: { code: "deadline_exceeded", message: "no run request arrived" } }));
-          closeSession(requestId);
           return;
         }
 

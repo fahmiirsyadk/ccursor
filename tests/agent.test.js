@@ -16,7 +16,7 @@ import { after, before, describe, it } from "node:test";
 import { discover } from "../src/locate.js";
 import { loadRoot } from "../src/proto/schema.js";
 import { FrameReader } from "../src/proto/connect.js";
-import { readStream, stream, unary } from "./helpers/rpc.js";
+import { bidiAppendBody, stream, unary } from "./helpers/rpc.js";
 import { clearBlobs, getBlob, makeBlob, readBlobJson } from "../src/agent/blobs.js";
 import { clearSessions, closeSession, deliver, next, openSession, sessionCount } from "../src/agent/session.js";
 import { conversation, modelId, userText } from "../src/agent/request.js";
@@ -242,12 +242,6 @@ function doneChunk() {
   };
 }
 
-/** Encode a client message the way Cursor does. */
-function encodeRun(root, runRequest) {
-  const Type = root.lookupType("agent.v1.AgentClientMessage");
-  return Buffer.from(Type.encode(Type.fromObject({ run_request: runRequest })).finish());
-}
-
 /** Read every frame of a RunSSE response. */
 async function readFrames(root, response) {
   const Type = root.lookupType("agent.v1.AgentServerMessage");
@@ -311,18 +305,14 @@ describe("agent turn", { skip }, () => {
   });
 
   it("streams the answer back as interaction updates", async () => {
-    const append = root.lookupType("aiserver.v1.BidiAppendRequest");
-    const appendBody = append.encode(
-      append.fromObject({
-        request_id: { request_id: "run-1" },
-        data_binary: encodeRun(root, {
-          conversation_id: "conv-1",
-          requested_model: { model_id: "stub/model" },
-          action: { user_message_action: { user_message: { text: "hello" } } },
-          conversation_state: { mode: 2 },
-        }),
-      }),
-    ).finish();
+    const appendBody = bidiAppendBody(root, "run-1", {
+      run_request: {
+        conversation_id: "conv-1",
+        requested_model: { model_id: "stub/model" },
+        action: { user_message_action: { user_message: { text: "hello" } } },
+        conversation_state: { mode: 2 },
+      },
+    });
 
     const appended = await unary(base, "aiserver.v1.BidiService/BidiAppend", appendBody);
     assert.equal(appended.status, 200);
@@ -354,16 +344,12 @@ describe("agent turn", { skip }, () => {
   });
 
   it("explains itself when the model is not configured", async () => {
-    const append = root.lookupType("aiserver.v1.BidiAppendRequest");
-    const appendBody = append.encode(
-      append.fromObject({
-        request_id: { request_id: "run-2" },
-        data_binary: encodeRun(root, {
-          requested_model: { model_id: "nobody/nothing" },
-          action: { user_message_action: { user_message: { text: "hello" } } },
-        }),
-      }),
-    ).finish();
+    const appendBody = bidiAppendBody(root, "run-2", {
+      run_request: {
+        requested_model: { model_id: "nobody/nothing" },
+        action: { user_message_action: { user_message: { text: "hello" } } },
+      },
+    });
 
     await unary(base, "aiserver.v1.BidiService/BidiAppend", appendBody);
 

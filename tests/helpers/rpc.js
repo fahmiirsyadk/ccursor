@@ -59,3 +59,24 @@ export async function readStream(root, response, messageType) {
 
   return { messages, trailer };
 }
+
+/**
+ * A BidiAppend body exactly as the renderer builds it.
+ *
+ * The client hex-encodes the payload into `data` rather than using the `bytes`
+ * field: a 66811-byte message arrives as a 133622-character string. Getting this
+ * wrong makes every real turn fail to decode while a base64 test still passes.
+ */
+export function bidiAppendBody(root, requestId, clientMessage, seqno = 0) {
+  const Append = root.lookupType("aiserver.v1.BidiAppendRequest");
+  const Client = root.lookupType("agent.v1.AgentClientMessage");
+  const bytes = Client.encode(clientMessage).finish();
+
+  return Append.encode(
+    Append.fromObject({
+      request_id: { request_id: requestId },
+      append_seqno: seqno,
+      data: Buffer.from(bytes).toString("hex"),
+    }),
+  ).finish();
+}
