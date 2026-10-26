@@ -82,6 +82,16 @@ export const providersFile = () => path.join(stateDir(), "providers.json");
 /** Cursor's own agent prompt, extracted from the installed app by `apply`. */
 export const promptFile = () => path.join(stateDir(), "prompt.txt");
 
+/**
+ * A single line holding your API key.
+ *
+ * Only needed when Cursor does not attach the key to the turn itself. Models and the
+ * base URL come from Cursor's own model settings, so this file is the one thing that
+ * cannot be read from there: Cursor keeps the key encrypted, and decrypting it would
+ * mean reaching into the OS keyring.
+ */
+export const apiKeyFile = () => path.join(stateDir(), "apiKey");
+
 /** Cursor's own settings and persisted renderer state. */
 export const settingsFile = () =>
   path.join(home(), ".config", "Cursor", "User", "settings.json");

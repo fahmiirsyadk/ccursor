@@ -30,6 +30,7 @@ import * as settings from "./settings.js";
 import * as state from "./state.js";
 import * as update from "./update.js";
 import { cursorBinary, discover } from "./locate.js";
+import { catalog } from "./catalog.js";
 import { saveBasePrompt } from "./prompt/base.js";
 import {
   DEFAULT_PORT,
@@ -272,6 +273,12 @@ export async function cmdStatus() {
   console.log(`  routes.json port    : ${port}`);
   const ruleCount = Array.isArray(routes?.redirect) ? routes.redirect.length : 0;
   console.log(`  redirect rules      : ${ruleCount}`);
+  const { models, source } = catalog();
+  console.log(
+    `  models              : ${models.length} (${
+      source === "config" ? "providers.json" : source === "cursor" ? "Cursor's settings" : "none"
+    })`,
+  );
   console.log(`  providers           : ${settings.describeProviders()}`);
   console.log(`  BYOK server         : ${await daemon.describe(port ?? DEFAULT_PORT)}`);
   return 0;
@@ -352,13 +359,23 @@ export async function cmdDoctor() {
     );
   }
 
+  // Models come from Cursor's own settings when providers.json is absent, so a
+  // missing file is not a problem — an empty catalog is.
   const providers = settings.describeProviders();
   if (["missing", "empty", "malformed"].includes(providers)) {
-    problems.push(`${providersFile()} has no providers -> add one before sending a message`);
+    const { models, source } = catalog();
+    if (models.length === 0) {
+      problems.push(
+        "no models configured -> add one in Cursor's model settings (Settings → Models), " +
+          `or write ${providersFile()}`,
+      );
+    } else if (source === "cursor") {
+      notes.push(`models come from Cursor's model settings (${models.length} listed)`);
+    }
   } else if (!settings.hasDefaultAlias()) {
-    problems.push(
-      "providers.json has no \"default\" alias -> selecting Auto fails with " +
-        "\"Model default was not found\". Run 'cursor-byok alias'.",
+    notes.push(
+      "providers.json has no \"default\" alias -> selecting Auto falls back to the first " +
+        "model Cursor lists; run 'cursor-byok alias' to pin it",
     );
   }
 

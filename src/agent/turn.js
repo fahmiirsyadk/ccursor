@@ -26,7 +26,7 @@ import { withSystemPrompt } from "./prompt.js";
 import { basePrompt } from "../prompt/base.js";
 import { appRootFromWorkbench } from "../prompt/bundle.js";
 import { userInfo } from "../prompt/user-info.js";
-import { resolveModel, stream } from "./provider.js";
+import { resolveForRequest, stream } from "./provider.js";
 import { EXEC_CASES, TOOL_TYPES, findTool, providerTools, renderResult, toToolResult } from "./tools.js";
 import { execServerMessage, nextExecReply, toolCallCompleted, toolCallStarted } from "./exec.js";
 import { detail, info, warn } from "../ui.js";
@@ -303,19 +303,25 @@ async function* runTool({ root, requestId, allocateExecId, tool, input, callId, 
  */
 export async function* runTurn({ root, request, providers, requestId, queued, signal, workbench }) {
   const requested = modelId(request);
-  const resolved = resolveModel(providers, requested);
+  const resolved = resolveForRequest(request, providers, requested);
 
   if (!resolved) {
     yield textDelta(
       root,
       `No provider is configured for \`${requested || "the requested model"}\`. ` +
-        "Add it to `providers.json` in the state directory and reopen the model picker.",
+        "Add the model in Cursor's model settings, or list it in `providers.json`.",
     );
     yield turnEnded(root, {});
     return;
   }
 
   const { provider, apiModel } = resolved;
+  const origin = {
+    cursor: "credentials from Cursor's model settings",
+    "stored-key": "key from the apiKey file, base URL from Cursor's settings",
+    config: "providers.json",
+  }[resolved.source];
+  detail(`provider: ${origin} (${provider.baseUrl ?? provider.id})`);
 
   // A subagent is a run in its own right, with its own RunSSE. It must not be given
   // the Task tool: it would re-delegate the same work one level deeper.

@@ -26,9 +26,15 @@ The BYOK toggle is off, or the toggle was cleared after a plan refresh.
 
 **The model is missing from `Add Models`.**
 
-The name must match what your endpoint serves. `AvailableModels` is served by the
-local server from `providers.json` in the state directory; if that file is empty or malformed,
-the picker has nothing to show. `cursor-byok status` reports the provider count.
+The name must match what your endpoint serves. `AvailableModels` is served from
+Cursor's own model settings, or from `providers.json` when that file names the
+model. `cursor-byok status` prints which source is in use:
+
+```
+  models              : 3 (Cursor's settings)
+```
+
+If it says `none`, nothing has been added in either place.
 
 ---
 
@@ -148,19 +154,17 @@ for (const needle of ["subscriptionChangedListener=", "action=disable-openai-key
 
 ---
 
-## "Model default was not found in providers.json"
+## A turn fails with "No provider is configured"
 
-Cursor selected **Auto**, which it sends as `modelId: "default"`. Your provider file
-has no model with that id, so the request is rejected before it reaches your
-endpoint.
+Cursor sends `modelId: "default"` when **Auto** is selected, and Auto resolves to the
+first model in your list. This error means the list is empty: nothing added in
+Cursor's model settings, and no `providers.json`.
+
+Add a model in **Settings → Models**, or write `providers.json`. Then:
 
 ```bash
-cursor-byok alias          # maps "default" to your primary model
+cursor-byok status         # shows the source and the count
 ```
-
-The server reads `providers.json` on every turn, so no restart is needed. If you
-are already on a named model, switching away from Auto also avoids it — but the
-alias is the durable fix, because new composers start on Auto.
 
 Why it can appear even though you picked a named model: the catalog Cursor persisted
 can revert to its own 46-model list if a model fetch lands before the local server

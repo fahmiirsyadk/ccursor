@@ -227,40 +227,35 @@ seconds. Verified — writing while Cursor runs leaves the catalog unchanged.
 **Symptom**
 
 ```
-Model default was not found in ~/.cursor/providers.json.
+No provider is configured for `default`.
 ```
 
 **Cause**
 
 Cursor's model id for Auto is the literal string `default`. A composer that starts
 on Auto, or any turn where Auto is selected, sends `modelId: "default"` to the BYOK
-server. The adapter resolves models by id and throws when the id is absent:
-
-```js
-function xN(id) {
-  const entry = Lfe(id);
-  if (!entry) throw new ModelNotFoundError(id);   // "not found in providers.json"
-  return { apiModel: entry.model.apiModel, ... };
-}
-```
-
-`providers.json` normally lists only real models, so `default` misses.
+server. A catalog that lists only real models has no entry for it, so the turn is
+rejected before it reaches your endpoint.
 
 This becomes visible whenever the persisted catalog reverts to Cursor's own list
 (failure 5), because new composers then default to Auto.
 
 **Fix**
 
-Add an alias entry whose `apiModel` points at a real model:
+Nothing, in the common case: Auto resolves to the first model in the list, whether
+that list comes from Cursor's model settings or from `providers.json`. The server
+does the resolution, so there is no alias to maintain.
+
+To pin Auto to a specific model instead, list a `default` entry whose `apiModel`
+points at a real one:
 
 ```json
 { "id": "default", "apiModel": "vendor/model-large", "defaultOn": false }
 ```
 
-`cursor-byok alias` writes it, and the server reads `providers.json` on every
-turn, so no restart is needed.
-`seed.js` also pins every composer mode to the primary model, so new composers do
-not start on Auto in the first place.
+`cursor-byok alias` writes it, and the server reads `providers.json` on every turn,
+so no restart is needed. `seed.js` also pins every composer mode to the primary
+model, so new composers do not start on Auto in the first place.
 
 The catalog builder skips `default`, so the picker keeps a single Auto entry.
 

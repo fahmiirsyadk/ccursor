@@ -14,10 +14,79 @@
  * Keeping the wire format here means the agent loop never sees SSE.
  */
 
+import { catalogFromCursor, cursorSettings } from "../catalog.js";
+import { providerFromCredentials, requestCredentials, storedKey } from "./credentials.js";
+
 /** Provider types understood by this module. */
 export const SUPPORTED = new Set(["openai-chat", "anthropic"]);
 
-/** Read the configured providers file and resolve one model. */
+/**
+ * Resolve the provider for this turn.
+ *
+ * A model listed in `providers.json` wins: that file is an explicit choice, and it
+ * is the only way to express things Cursor's UI cannot — an `apiModel` that differs
+ * from the id, several endpoints at once, or a gateway the client cannot verify.
+ *
+ * Otherwise the credentials the client attached are used, which is what the user
+ * configured in Cursor's own model settings. That makes `providers.json` optional:
+ * adding a model in the UI is enough.
+ *
+ * @param {object} runRequest decoded agent.v1.AgentRunRequest
+ * @param {Array} providers entries from providers.json
+ * @param {string} id the model the client asked for
+ * @returns {{provider: object, model: object, apiModel: string, source: string}|null}
+ */
+export function resolveForRequest(runRequest, providers, id) {
+  const configured = resolveModel(providers, id);
+  if (configured) return { ...configured, source: "config" };
+
+  const credentials = requestCredentials(runRequest);
+  if (credentials) {
+    const model = id === "default" || !id ? firstCursorModel() : id;
+    if (typeof model !== "string" || model.length === 0) return null;
+    return build(credentials, model, runRequest, "cursor");
+  }
+
+  // No key in the request: Cursor keeps its own copy encrypted, so a one-line file
+  // is the smallest stand-in. The base URL and the model still come from Cursor's
+  // own settings.
+  const key = storedKey();
+  if (key.length === 0) return null;
+
+  const model = id === "default" || !id ? firstCursorModel() : id;
+  if (typeof model !== "string" || model.length === 0) return null;
+
+  return build({ apiKey: key, baseUrl: cursorBaseUrl() }, model, runRequest, "stored-key");
+}
+
+/** A resolved provider, in the shape the agent loop expects. */
+function build(credentials, model, runRequest, source) {
+  const provider = providerFromCredentials(credentials, model, runRequest?.model_details ?? {});
+  return {
+    provider,
+    model: provider.models[0],
+    apiModel: provider.models[0].apiModel,
+    source,
+  };
+}
+
+/** The base URL from Cursor's own settings, or "" when it has none. */
+function cursorBaseUrl() {
+  try {
+    return cursorSettings().baseUrl ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** The first model Cursor lists, or "" when it lists none. */
+function firstCursorModel() {
+  try {
+    return catalogFromCursor()[0]?.id ?? "";
+  } catch {
+    return "";
+  }
+}
 export function resolveModel(providers, id) {
   for (const provider of providers ?? []) {
     for (const model of provider.models ?? []) {

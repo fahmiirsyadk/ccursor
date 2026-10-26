@@ -20,7 +20,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import { buildAvailableModels, catalogFromProviders } from "./catalog.js";
+import { buildAvailableModels, catalog } from "./catalog.js";
 import { loadRoot } from "./proto/schema.js";
 import {
   decompress,
@@ -184,7 +184,11 @@ export function createServer({ workbench, port = DEFAULT_PORT, host = "127.0.0.1
 
     if (route === "aiserver.v1.AiService/AvailableModels") {
       unary(req, res, () => {
-        const body = buildAvailableModels(getRoot(), catalogFromProviders());
+        const { models, source } = catalog();
+        if (source === "none") {
+          warn("no models: add one in Cursor's model settings, or write providers.json");
+        }
+        const body = buildAvailableModels(getRoot(), models);
         stats.availableModels += 1;
         return body;
       });

@@ -197,7 +197,7 @@ export function reportSeed(result) {
       ok(`would seed ${result.count} model(s) — ${result.models.join(", ")}`);
       break;
     case "no-providers":
-      warn("no providers configured; nothing to seed");
+      detail("no providers.json; models come from Cursor's own settings");
       break;
     case "no-state-db":
       warn("Cursor has never run here (no state.vscdb); skipping seed");

@@ -317,21 +317,40 @@ instructions, `AGENTS.md`, rules, a subagent reminder).
 
 `apply` writes the cached prompt; `node tools/extract-prompt.js --print` shows it.
 
-## Where the model catalog comes from
+## Where the models come from
 
-Two independent sources, and they can disagree:
+Two sources, and the file is the optional one:
 
-| Source | Served by | When |
+| Source | What it gives | When |
 |---|---|---|
-| `AvailableModels` RPC | the local server, built from `providers.json` | Every picker refresh |
-| `availableDefaultModels2` in `state.vscdb` | Cursor's own persistence | First render after boot |
+| Cursor's own model settings | model list, base URL, and the key attached to each turn | whenever `providers.json` does not name that model |
+| `providers.json` | an explicit catalog, and an `apiModel` that can differ from the id | when the file lists the model |
 
-The RPC is authoritative at runtime; the database row decides what the *first*
-render shows. Seeding writes the row; `alias` covers the case where a stale row
-makes Cursor send Auto.
+Cursor's side is read from its state database, which is plain JSON:
 
----
+```text
+availableAPIKeyModels     what Cursor fetched from the provider after you added a model
+availableDefaultModels2   the catalog the picker renders on boot
+openAIBaseUrl             the base URL you typed in the settings
+```
 
+The key is the one thing not readable there: Cursor stores it encrypted, under
+`secret://cursorAuth/openAIKey`. So it comes from the turn instead, where the client
+attaches it as `requested_model.api_key_credentials` — the same field that carries
+the base URL. When a build does not attach it, a single line in
+`~/.cursor-byok-patch/apiKey` stands in.
+
+The precedence is deliberate: a model named in `providers.json` wins, because that
+file is an explicit choice and the only way to express an upstream name that differs
+from the id. Everything else falls through to Cursor's settings.
+
+`cursor-byok status` prints which source is live:
+
+```text
+  models              : 2 (providers.json)
+```
+
+## What the local server answers
 ## What the local server answers
 
 `routes.json` decides what is diverted. Everything in that list is answered here —

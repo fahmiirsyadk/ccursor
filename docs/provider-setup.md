@@ -1,8 +1,41 @@
 # Provider setup
 
-`providers.json` in the state directory defines what the local BYOK server exposes
-to Cursor. The server reads it on every turn and serves it through `AvailableModels`,
-so an edit takes effect without a restart.
+There are two ways to tell the server where your models are. Most people need
+neither file.
+
+## The short way: Cursor's own settings
+
+Add your model and API key in **Settings → Models**. Cursor stores the model list and
+the base URL in its own state, and attaches the key to each turn. The server reads
+all three from there:
+
+| What | Where it comes from |
+|---|---|
+| model list | Cursor's `availableAPIKeyModels` / `availableDefaultModels2` |
+| base URL | Cursor's `openAIBaseUrl` |
+| API key | the turn itself (`requested_model.api_key_credentials`) |
+
+Nothing in `~/.cursor-byok-patch/` is required. `cursor-byok status` prints which
+source is in use:
+
+```
+  models              : 3 (Cursor's settings)
+```
+
+If Cursor does not pass the key along with a turn, put it in one line instead:
+
+```bash
+printf '%s\n' 'sk-...' > ~/.cursor-byok-patch/apiKey
+```
+
+## The long way: `providers.json`
+
+This file wins when it names the same model, and it is the only way to express what
+Cursor's UI cannot: an `apiModel` that differs from the id, several endpoints at
+once, or a gateway Cursor cannot verify.
+
+The server reads it on every turn and serves it through `AvailableModels`, so an edit
+takes effect without a restart.
 
 ## Shape
 
@@ -112,19 +145,14 @@ address works here:
 }
 ```
 
-## Always add the `default` alias
+## Auto
 
-Cursor sends `modelId: "default"` whenever **Auto** is selected, and a freshly
-created composer starts on Auto. If `providers.json` has no model with that id, the
-turn is rejected before it reaches your endpoint. Cursor shows the message the server
-returns:
+Cursor sends `modelId: "default"` whenever **Auto** is selected, and a fresh composer
+starts on Auto.
 
-```
-No provider is configured for `default`.
-Add it to `providers.json` in the state directory and reopen the model picker.
-```
-
-Add the alias with one command:
+With Cursor's own model list, Auto resolves to the first model in that list — no setup
+needed. With `providers.json`, either list a `default` entry or let it fall back the
+same way. To pin Auto to a specific model:
 
 ```bash
 cursor-byok alias
@@ -145,8 +173,7 @@ Which appends:
 skips `default`, so the picker still shows a single Auto entry rather than a
 duplicate.
 
-The server reads `providers.json` on every turn, so no restart
-is needed.
+The server reads `providers.json` on every turn, so no restart is needed.
 
 ## Verifying
 

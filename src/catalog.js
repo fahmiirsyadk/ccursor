@@ -4,13 +4,28 @@
  * The one RPC that needs no agent protocol: it returns a list of models and the
  * picker renders them. Getting this working proves the router, the framing and the
  * server before any agent code exists.
+ *
+ * When `providers.json` is absent, the catalog comes from Cursor's own settings
+ * instead: the models the user added through its "Add Models" dialog. See
+ * `catalogFromCursor`.
  */
 
+import { createRequire } from "node:module";
+
 import { lookupType } from "./proto/schema.js";
-import { providersFile, readJson } from "./paths.js";
+import { USER_STATE_KEY, providersFile, readJson, stateDbFile } from "./paths.js";
 
 const RESPONSE = "aiserver.v1.AvailableModelsResponse";
 const MODEL = "aiserver.v1.AvailableModelsResponse.AvailableModel";
+
+/** `node:sqlite` is built in from Node 22.5; older versions do not have it. */
+function loadSqlite() {
+  try {
+    return createRequire(import.meta.url)("node:sqlite");
+  } catch {
+    return null;
+  }
+}
 
 /** Models from providers.json, in picker order. */
 export function catalogFromProviders() {
@@ -32,6 +47,105 @@ export function catalogFromProviders() {
     }
   }
   return out;
+}
+
+/**
+ * Models Cursor itself has stored.
+ *
+ * Two lists matter. `availableAPIKeyModels` holds what Cursor fetched from the
+ * provider after the user added a model and a key; `availableDefaultModels2` is the
+ * catalog the picker renders on boot. Both are plain JSON in Cursor's state
+ * database, so reading them needs no key and no decryption.
+ *
+ * Read-only, and tolerant of a missing or locked database: an empty list is a
+ * picker with nothing in it, which `doctor` can explain, not a crash.
+ *
+ * @returns {Array} the same shape `catalogFromProviders` returns
+ */
+export function catalogFromCursor() {
+  const state = readCursorState();
+  if (!state) return [];
+
+  const out = [];
+  const seen = new Set();
+
+  for (const list of [state.availableAPIKeyModels, state.availableDefaultModels2]) {
+    if (!Array.isArray(list)) continue;
+    for (const model of list) {
+      const id = typeof model?.name === "string" ? model.name : "";
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        displayName: model.clientDisplayName ?? model.displayName ?? id,
+        contextTokenLimit: model.contextTokenLimit ?? 200_000,
+        supportsImages: model.supportsImages !== false,
+        thinking: model.supportsThinking === true,
+        defaultOn: model.defaultOn === true,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * What Cursor's own settings say about the endpoint.
+ *
+ * The base URL is the one the user typed in Cursor's model settings. Read-only, and
+ * empty when Cursor has none or the database cannot be opened.
+ *
+ * @returns {{baseUrl: string}}
+ */
+export function cursorSettings() {
+  const state = readCursorState();
+  const baseUrl = typeof state?.openAIBaseUrl === "string" ? state.openAIBaseUrl.trim() : "";
+  return { baseUrl };
+}
+
+/**
+ * The JSON blob Cursor keeps its renderer state in.
+ *
+ * @returns {object|null} null when the database or the row is unavailable
+ */
+function readCursorState() {
+  const sqlite = loadSqlite();
+  if (!sqlite) return null;
+
+  let db;
+  try {
+    db = new sqlite.DatabaseSync(stateDbFile(), { readOnly: true });
+    const row = db.prepare("select value from ItemTable where key = ?").get(USER_STATE_KEY);
+    if (!row?.value) return null;
+    return JSON.parse(typeof row.value === "string" ? row.value : String(row.value));
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Already closed, or never opened.
+    }
+  }
+}
+
+/**
+ * The catalog to serve.
+ *
+ * `providers.json` wins when it lists anything, because a user who wrote that file
+ * asked for exactly those models. Otherwise Cursor's own settings are used, so
+ * adding a model in Cursor's UI is enough.
+ *
+ * @returns {{models: Array, source: "config"|"cursor"|"none"}}
+ */
+export function catalog() {
+  const fromConfig = catalogFromProviders();
+  if (fromConfig.length > 0) return { models: fromConfig, source: "config" };
+
+  const fromCursor = catalogFromCursor();
+  if (fromCursor.length > 0) return { models: fromCursor, source: "cursor" };
+
+  return { models: [], source: "none" };
 }
 
 /**

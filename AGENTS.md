@@ -26,6 +26,7 @@ step, no transpiler. `node:test` for tests.
 | `src/extensionHost.js` | Narrows the extension hash check to the files we modify. |
 | `src/cli.js` | Argument parsing and command dispatch. |
 | `src/server.js` | The local BYOK server: Connect RPC surface. |
+| `src/catalog.js` | The model list: from `providers.json`, else from Cursor's own settings. |
 | `src/daemon.js` | Starting, probing and stopping the background server. |
 | `src/prompt/` | Cursor's own prompt: load its builder from the install, render the tree, build the `user_info` block per turn. |
 | `src/agent/` | One agent turn: request parsing, provider call, response encoding. |

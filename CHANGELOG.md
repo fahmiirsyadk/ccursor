@@ -8,6 +8,15 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Cursor's own model settings are enough.** Adding a model and a key in Cursor's
+  UI (Settings → Models) now configures the server: the model list and base URL come
+  from Cursor's state, and the key from the turn itself
+  (`requested_model.api_key_credentials`). `providers.json` is optional, and wins
+  only when it names the same model. Auto resolves to the first model in the list,
+  so no alias file is needed either.
+- A one-line `apiKey` file, for a build that does not attach the key to the turn.
+  That is the only piece that cannot be read from Cursor, which keeps it encrypted.
+
 - **Cursor's own agent prompt is used.** It is not written by this project and not
   fetched from Cursor's servers: `apply` reads the prompt out of Cursor's bundled
   `cursor-agent-exec` extension, which builds it as an element tree, and renders it
