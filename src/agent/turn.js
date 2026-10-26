@@ -303,6 +303,12 @@ export async function* runTurn({ root, request, providers, requestId, queued, si
   }
 
   const policy = imagePolicy(resolved.model, images);
+  if (images.length > 0) {
+    detail(
+      `${images.length} image(s) ${policy === "skip" ? "withheld" : "sent"} ` +
+        `(${images.map((image) => image.mimeType).join(", ")})`,
+    );
+  }
 
   // Dropping an image silently makes the assistant answer "you attached nothing",
   // which is both wrong and confusing. The model is told what arrived either way.
