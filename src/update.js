@@ -61,13 +61,13 @@ function extract(appimage, destination) {
 }
 
 /** Apply every patch to a tree, raising on the first problem. */
-export function patchTree(appRoot, { installHook = true } = {}) {
+export async function patchTree(appRoot, { installHook = true } = {}) {
   // Baseline first: the upstream installer rewrites these bundles, so capturing
   // after it would make revert restore a hook-injected file instead of the one
   // Cursor shipped.
   for (const file of bundles.bundlePaths(appRoot)) state.captureBaseline(file);
 
-  if (installHook && !ccursor.install(appRoot)) {
+  if (installHook && !(await ccursor.install(appRoot))) {
     throw new UpdateError("hook installer failed");
   }
 
@@ -131,7 +131,7 @@ export function rollback(installDir = defaultInstallDir()) {
   return true;
 }
 
-export function run({ appimage, installDir, keepOld = true } = {}) {
+export async function run({ appimage, installDir, keepOld = true } = {}) {
   const target = installDir ? path.resolve(installDir) : defaultInstallDir();
 
   let source;

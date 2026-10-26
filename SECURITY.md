@@ -28,6 +28,24 @@ tool published for people who want to run their own models through a client they
 already use; whether that is acceptable under your agreement is your call and your
 responsibility.
 
+## Third-party code
+
+The BYOK extension (`@cometix/ccursor`) is a 17 MB VSIX containing 4.4 MB of minified
+JavaScript and eight native binaries. It receives your API key and your source code.
+None of that can be reviewed, so it is treated as untrusted:
+
+- the tarball is downloaded once, its SHA-512 verified against a hash pinned in this
+  repository, and the extracted copy re-verified on every run (`src/vendor.js`)
+- a mismatch fails loudly instead of installing something else
+- `cursor-byok apply` never falls back to `npx`, which would re-fetch unverified bytes
+
+Replacing that package with our own code is in progress. The protobuf schema turned
+out to be recoverable from Cursor's own bundle, which makes it feasible; see
+[docs/reimplementation.md](docs/reimplementation.md).
+
+The installer also patches Cursor's extension-signature check globally, which
+disables integrity verification for ten built-in extensions where we modify one.
+
 ## Trust model
 
 - Everything runs locally. The code is short enough to read in one sitting.

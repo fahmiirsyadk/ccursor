@@ -66,7 +66,7 @@ async function health(port = DEFAULT_PORT) {
 
 // ------------------------------------------------------------------- commands
 
-export function cmdApply(args = {}) {
+export async function cmdApply(args = {}) {
   const found = requireInstall();
   if (!found) return 1;
 
@@ -74,7 +74,7 @@ export function cmdApply(args = {}) {
   info(`app root: ${appRoot}`);
   detail(`version ${version ?? "unknown"}`);
 
-  if (!args.skipInstaller && !ccursor.install(appRoot)) {
+  if (!args.skipInstaller && !(await ccursor.install(appRoot))) {
     warn("continuing without the hook installer; transport will not work");
   }
 
@@ -298,7 +298,7 @@ export async function cmdRun(args = {}) {
 
   if (!state.markerIsFresh(appRoot, files)) {
     info("patch state stale (Cursor was updated?) — re-applying");
-    const rc = cmdApply({ skipSeed: true });
+    const rc = await cmdApply({ skipSeed: true });
     if (rc !== 0) warn("re-apply failed; launching anyway");
   }
 
@@ -324,7 +324,7 @@ export async function cmdRun(args = {}) {
   return 0;
 }
 
-export function cmdUpdate(args = {}) {
+export async function cmdUpdate(args = {}) {
   const installDir = args.installDir ? path.resolve(args.installDir) : defaultInstallDir();
 
   if (args.rollback) {
@@ -341,6 +341,7 @@ export function cmdUpdate(args = {}) {
     installDir,
     keepOld: !args.dropOld,
   });
+  // update.run is async; the caller awaits via main().
 }
 
 /**

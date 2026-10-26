@@ -14,52 +14,7 @@ import { spawnSync } from "node:child_process";
 import { ROUTER_MARKER } from "./paths.js";
 import { detail, fail, info, ok } from "./ui.js";
 
-export const PACKAGE = "@cometix/ccursor@0.0.15";
-const TIMEOUT_MS = 600_000;
-
-/** True when a package runner is on PATH. */
-export function available() {
-  for (const runner of ["npx", "bunx"]) {
-    const probe = spawnSync(runner, ["--version"], { encoding: "utf8" });
-    if (probe.status === 0) return runner;
-  }
-  return null;
-}
-
-/** Install or repair the hook + router. Returns true on success. */
-export function install(appRoot, { quiet = false } = {}) {
-  const runner = available();
-  if (!runner) {
-    fail("npx not found; install Node.js 18+ or run the installer yourself");
-    return false;
-  }
-
-  if (!quiet) info(`installing ${PACKAGE}`);
-
-  const result = spawnSync(runner, ["-y", PACKAGE, "install"], {
-    encoding: "utf8",
-    timeout: TIMEOUT_MS,
-    env: { ...process.env, CCURSOR_CURSOR_ROOT: appRoot },
-  });
-
-  if (result.error) {
-    fail(`could not start the installer: ${result.error.message}`);
-    return false;
-  }
-  if (result.status !== 0) {
-    fail("installer failed");
-    const lines = (result.stderr || result.stdout || "").split("\n").filter(Boolean);
-    for (const line of lines.slice(-6)) detail(line);
-    return false;
-  }
-
-  if (!quiet) {
-    const lines = (result.stdout || "").split("\n").filter(Boolean);
-    for (const line of lines.slice(-3)) detail(line);
-    ok("hook and router installed");
-  }
-  return true;
-}
+export { PINNED as PACKAGE, install } from "./vendor.js";
 
 export function extensionPresent(appRoot) {
   return fs.existsSync(path.join(appRoot, "extensions", "cursor2plus"));

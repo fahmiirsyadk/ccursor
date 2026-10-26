@@ -246,7 +246,9 @@ catalog.json last catalog computed from providers.json
   writing something broken.
 - **No affiliation.** Not affiliated with Cursor or Anysphere. The hook and router
   come from [@cometix/ccursor](https://www.npmjs.com/package/@cometix/ccursor),
-  which this tool drives and pins.
+  which this tool drives, pins by hash, and vendors rather than re-fetching. That
+  package is unauditable (minified JS plus native binaries), which is why replacing
+  it is planned — see [docs/reimplementation.md](docs/reimplementation.md).
 
 ## Development
 
