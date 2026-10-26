@@ -6,9 +6,10 @@ Read this before installing.
 
 It modifies the JavaScript bundle of a desktop application you already have
 installed, so that a feature you configured (your own API key) keeps working. It
-writes only inside the Cursor installation directory and two config files in your
-home directory. It never phones home, never collects telemetry, and makes no
-network requests of its own.
+writes only inside the Cursor installation directory, one settings file, Cursor's
+own model state, and its own state directory. It never phones home, never collects
+telemetry, and makes no network requests of its own. The only outbound requests are
+the model calls you configured, made by the local server.
 
 ## What it does not do
 
@@ -30,25 +31,43 @@ responsibility.
 
 ## Third-party code
 
-The BYOK extension (`@cometix/ccursor`) is a 17 MB VSIX containing 4.4 MB of minified
-JavaScript and eight native binaries. It receives your API key and your source code.
-None of that can be reviewed, so it is treated as untrusted:
+There is none. Every component is in this repository:
 
-- the tarball is downloaded once, its SHA-512 verified against a hash pinned in this
-  repository, and the extracted copy re-verified on every run (`src/vendor.js`)
-- a mismatch fails loudly instead of installing something else
-- `cursor-byok apply` never falls back to `npx`, which would re-fetch unverified bytes
+| Component | What it does |
+|---|---|
+| `src/router.js` | Diverts Cursor's AI calls to the local server |
+| `src/inject.js` | Prepends that router to Cursor's own extension hosts |
+| `src/server.js` | Answers the RPCs Cursor makes |
+| `src/agent/` | One agent turn: request, provider call, tool loop |
+| `src/prompt/` | Reads Cursor's agent prompt out of its own bundled extension |
+| `src/proto/client-schema.js` | Reads Cursor's schema out of its own client |
 
-The installer also patches Cursor's extension-signature check globally, which
-disables integrity verification for ten built-in extensions where we modify one.
+The one runtime dependency is [`protobufjs`](https://www.npmjs.com/package/protobufjs),
+used to encode and decode protobuf. It is a well-known library with no native code.
+
+Nothing is fetched at run time, no tarball is downloaded, and no traffic is sent to
+Cursor's backend. The protocol schema and the agent prompt are read from the
+installed app; the rest of the prompt is what the client sends with the request.
+
+### What is still modified in Cursor
+
+- two workbench bundles, to neutralise the guards that switch BYOK off
+- two of Cursor's own extension hosts, to prepend the router
+- `extensionHostProcess.js`, to drop those two extensions from the expected-hash
+  table so the check still verifies everything else
+- `settings.json`, to force HTTP/1.1
+- `state.vscdb`, to seed your models into the picker
+
+Each write is preceded by a snapshot, and `revert` restores the pristine baseline.
 
 ## Trust model
 
 - Everything runs locally. The code is short enough to read in one sitting.
-- The one external dependency is `@cometix/ccursor`, invoked through `npx` and
-  pinned to `0.0.15`. That package injects the renderer hook and the HTTP/1.1
-  router. If you would rather not run it, use `--skip-installer` and install the
-  hook yourself; `doctor` will report the router as missing.
+- The only external dependency is `protobufjs`, for protobuf encoding.
+- The prompt and the protocol schema are read from your installed Cursor, not
+  written by hand, so there is no frozen copy to drift or to trust blindly.
+- No process contacts Cursor's backend on your behalf. Telemetry hosts are answered
+  locally and dropped.
 - Patches are structural and validated. When the expected code shape is absent, the
   tool writes nothing and tells you, instead of guessing.
 - Every write is preceded by a snapshot, and `revert` restores the pristine

@@ -4,6 +4,48 @@ All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Cursor's own agent prompt is used.** It is not written by this project and not
+  fetched from Cursor's servers: `apply` reads the prompt out of Cursor's bundled
+  `cursor-agent-exec` extension, which builds it as an element tree, and renders it
+  with the same rules as the renderer beside it. The result is cached in
+  `~/.cursor-byok-patch/prompt.txt`. `tools/extract-prompt.js --print` shows it.
+- **`user_info` is built per turn.** Cursor's own component produces the block that
+  tells the model its OS, shell, workspace path, git status and today's date, from
+  the environment in the request. Without it the model guessed a repository path, and
+  a delegated `Task` then searched a directory that did not exist.
+- `src/prompt/` holds the loader, the renderer, the cached prompt and the `user_info`
+  builder; `src/agent/prompt.js` only composes them with the request's instructions.
+
+### Fixed
+
+- **Glob was sent as a regular expression.** Cursor has a `globToolCall` but no glob
+  exec: a Glob runs as a Grep with the glob as a filter and an empty pattern.
+  Putting `**/*.md` in `pattern` made ripgrep reject it with a parse error. The call
+  now matches Cursor's own implementation, including the retry with `pattern: "."`
+  that ripgrep requires when the pattern is empty.
+- A Glob result is read from `workspace_results.files`, where a grep-shaped result
+  puts the file list, instead of from the top level where it never appears.
+- The "Cursor worktree" note in `user_info` appeared for every workspace, because the
+  module that decides it was a stub. It now uses the real check, so the note only
+  appears for a path under `.cursor/worktrees`.
+
+### Changed
+
+- `src/ccursor.js` is gone; `inject.js` reports which extension hosts carry the
+  router, next to the code that puts it there.
+- `apply` removes a renderer hook that an earlier installer wrote into the workbench
+  bundle. It is third-party code that nothing here uses, and `status` reports it as
+  `foreign hook` instead of the old `hook injected` line.
+
+### Removed
+
+- The leftover third-party package cache in the state directory is no longer used by
+  anything and has been deleted.
+
 ## [2.0.0] - 2026-10-26
 
 Ported from Python to Node.js. Zero runtime dependencies, no build step, no

@@ -5,11 +5,12 @@
 ```bash
 git clone https://github.com/fahmiirsyadk/ccursor ~/dev/ccursor
 cd ~/dev/ccursor
+npm install
 npm test
 ```
 
-No dependencies to install: the tool uses only Node built-ins, and the test suite
-uses `node:test`.
+One runtime dependency (`protobufjs`, for Cursor's protobuf schemas), no build step,
+no transpiler. Tests use `node:test`.
 
 ## What needs care
 
@@ -28,13 +29,21 @@ the only safety net a user has.
 while Cursor is open — Cursor holds that state in memory and overwrites the row
 within seconds, so a live seed is silently lost.
 
+**The prompt.** `src/prompt/` reads Cursor's own prompt out of its installed
+`cursor-agent-exec` extension and renders it. Do not add prompt text of our own; if
+extraction fails, the turn runs without it and says so.
+
+**A tool call is not always a tool exec.** Cursor has a `globToolCall` but no glob
+exec — a Glob runs as a Grep with the glob as a filter. Check `ExecServerMessage` in
+the schema, then mirror what Cursor's own runtime does (`extensions/cursor-agent-host`).
+
 ## Testing against a real install
 
 ```bash
-node src/cli.js apply --dry-run --skip-installer   # reports, writes nothing
-node src/cli.js apply --skip-installer             # writes, keeps snapshots
-node src/cli.js doctor                             # end-to-end check
-node src/cli.js revert                             # back to pristine
+node src/cli.js apply --dry-run    # reports, writes nothing
+node src/cli.js apply              # writes, keeps snapshots
+node src/cli.js doctor             # end-to-end check
+node src/cli.js revert             # back to pristine
 ```
 
 Extract a throwaway tree to test without touching your daily install:
@@ -43,14 +52,14 @@ Extract a throwaway tree to test without touching your daily install:
 mkdir -p /tmp/cursor-test && cd /tmp/cursor-test
 ~/Applications/Cursor.AppImage --appimage-extract
 CURSOR_APP_ROOT=/tmp/cursor-test/squashfs-root/usr/share/cursor/resources/app \
-  node ~/dev/ccursor/src/cli.js apply --skip-installer
+  node ~/dev/ccursor/src/cli.js apply
 ```
 
 ## Pull requests
 
 - Keep changes focused; one concern per PR.
 - Update the relevant doc when behaviour changes: `README.md`,
-  `docs/how-it-works.md`, `docs/troubleshooting.md`, `docs/tool-calling.md`.
+  `docs/architecture.md`, `docs/troubleshooting.md`, `docs/tool-calling.md`.
 - Tests must pass: `npm test`.
 - If your change depends on a specific Cursor build, say which one in the PR
   description.

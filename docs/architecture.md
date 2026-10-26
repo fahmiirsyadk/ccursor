@@ -14,8 +14,8 @@ lines are real excerpts.
 │                                                                 │
 │  renderer            agent host              extension host     │
 │  ────────            ──────────              ──────────────     │
-│  composer UI   →     RunSSE / BidiAppend  →  cursor2plus        │
-│  model picker        (HTTP/1.1 transport)    steps aside :39831 │
+│  composer UI   →     RunSSE / BidiAppend  →  cursor-byok server │
+│  model picker        (HTTP/1.1 transport)    :39831             │
 │                                              cursor-always-local│
 └─────────────────────────────────────────────────────────────────┘
                                                     │
@@ -24,11 +24,10 @@ lines are real excerpts.
                                        (openai-chat / anthropic)
 ```
 
-Three things make this work: the **router** inside the extension hosts, the
-**server** this repository runs on `127.0.0.1:39831`, and the **handover** between
-that server and the BYOK extension. The extension probes `/health` on boot; when
-something answers as ours it steps aside, so whichever process wins the port serves
-the traffic. `cursor-byok run` starts the server first for that reason.
+Two things make this work: the **router** prepended to Cursor's own extension hosts,
+and the **server** this repository runs on `127.0.0.1:39831`. The router rewrites a
+matching call to that port, so the server has to be listening before Cursor starts —
+which is why `cursor-byok run` starts it first.
 
 ---
 
@@ -46,22 +45,22 @@ cursor-byok run
   │                  userAddedModels
   │                  aiSettings.modelConfig.*   pinned to the primary model
   │     Why: the renderer asks for models immediately on boot. Without a seed it
-  │     can reach Cursor's backend before the extension binds, and persists
+  │     can reach Cursor's backend before the router starts diverting, and persists
   │     Cursor's own 46-model list. See failure 5 in how-it-works.md.
   │
   └─ 3. spawn Cursor, detached
         │
         └─ Cursor boots
              ├─ renderer reads the seeded catalog  → your model in the picker
-             ├─ extension binds 127.0.0.1:39831
-             └─ routers load routes.json
+             ├─ router loads routes.json
+             └─ turns go to 127.0.0.1:39831
 ```
 
 Verified ordering problem this solves:
 
 ```text
 14:32:00  Cursor process starts
-14:32:08  BYOK extension binds 127.0.0.1:39831      <- 8 second window
+14:32:08  router starts diverting                  <- server must already be up
 ```
 
 ---
@@ -79,15 +78,16 @@ ROUTER  (cursor-agent-host/dist/main.js, injected)
   │  host matches api*.cursor.sh  AND  path is in routes.json redirect set
   │  → rewrite to http://127.0.0.1:39831/agent.v1.AgentService/RunSSE
   ↓
-cursor2plus server  (:39831)
+cursor-byok server  (:39831)
   │  1. resolve model id  →  providers.json  →  apiModel
-  │  2. build provider request: system prompt, tools, conversation
+  │  2. build the system message: user_info, then Cursor's prompt,
+  │     then the instructions the request carried
   │  3. POST https://your-endpoint/v1/chat/completions   (stream)
   ↓
 your endpoint
   │  SSE deltas
   ↓
-cursor2plus server
+cursor-byok server
   │  map provider events → Cursor event frames
   ↓
 agent host  →  renderer  →  UI
@@ -172,6 +172,13 @@ round 1
        no tool calls → stream the answer → done
 ```
 
+One mapping is not one-to-one. Cursor has a `globToolCall` in its tool-call
+vocabulary but **no glob exec**: a Glob runs as a Grep whose `pattern` is empty and
+whose `glob` is the filter, asking only for file names. Putting the glob in `pattern`
+makes ripgrep parse `**/*.md` as a regular expression, which fails. ripgrep also
+refuses an empty pattern, so the call is retried once with `pattern: "."` — the same
+fallback Cursor's own implementation uses.
+
 Real trace from a porting task:
 
 ```text
@@ -239,10 +246,8 @@ Two sources exist, and they are not equally good:
 | Source | What it is |
 |---|---|
 | `out/vs/workbench/workbench.desktop.main.js` | the client's own generated code: 9546 messages, 1024 enums, 88 services, 2791 methods |
-| `extensions/cursor2plus/dist/extension.js` | a separate, older artifact: 1235 of those methods do not exist in it |
-
-So the client wins. Its schema is not protobuf descriptors, though — it is
-protobuf-es generated code:
+So the client is the only source. Its schema is not protobuf descriptors, though —
+it is protobuf-es generated code:
 
 ```js
 X=makeMessageType("agent.v1.AgentRunRequest",()=>[{no:1,name:"conversation_state",kind:"message",T:Qbd}])
@@ -256,10 +261,54 @@ third-party code to learn a schema is a poor trade, and the shapes are regular
 enough to scan.
 
 `apply` does this once and writes the result to `~/.cursor-byok-patch/schema/`, so
-the server starts in milliseconds and does not need the extension at all. When the
-workbench bundle is newer than the cache, the bundle wins.
+the server starts in milliseconds. When the workbench bundle is newer than the
+cache, the bundle wins.
 
 `node tools/extract-schema.js --message AgentRunRequest` prints any message.
+
+## Where the prompt comes from
+
+The prompt is Cursor's, and it is read from Cursor's own install — not written here,
+and not fetched from Cursor's backend.
+
+Cursor's bundled `cursor-agent-exec` extension (publisher `anysphere`) builds the
+agent prompt as an element tree:
+
+```js
+Kz("section", { title: "general", children: [...] })
+```
+
+`src/prompt/bundle.js` evaluates the region that declares those sections, once per
+process, and `src/prompt/render.js` turns the tree into text using the same rules as
+the renderer beside it. Unknown names resolve to inert stubs, so a helper the region
+does not need cannot fail the whole prompt.
+
+Two pieces, both Cursor's:
+
+| Piece | Source | When |
+|---|---|---|
+| `user_info` | `Z8`, built from the request's `request_context.env` | every turn |
+| the agent prompt | `n5`, the general builder | cached by `apply` in `~/.cursor-byok-patch/prompt.txt` |
+
+`user_info` is per turn because everything in it changes per turn:
+
+```text
+<user_info>
+OS Version: linux 6.8.0
+Shell: /bin/bash
+Workspace Path: /home/user/repo
+Is directory a git repo: Yes, at /home/user/repo
+Today's date: 2026-10-26
+</user_info>
+```
+
+Without it the model has no idea where the repository is. It guesses an absolute
+path, and a `Task` call then hands that guess to a subagent, which searches a
+directory that does not exist. The block is prepended, in Cursor's own order:
+`user_info`, then the prompt, then whatever the request carries (custom
+instructions, `AGENTS.md`, rules, a subagent reminder).
+
+`apply` writes the cached prompt; `node tools/extract-prompt.js --print` shows it.
 
 ## Where the model catalog comes from
 
@@ -267,7 +316,7 @@ Two independent sources, and they can disagree:
 
 | Source | Served by | When |
 |---|---|---|
-| `AvailableModels` RPC | `cursor2plus`, built from `providers.json` | Every picker refresh |
+| `AvailableModels` RPC | the local server, built from `providers.json` | Every picker refresh |
 | `availableDefaultModels2` in `state.vscdb` | Cursor's own persistence | First render after boot |
 
 The RPC is authoritative at runtime; the database row decides what the *first*

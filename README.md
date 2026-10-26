@@ -1,17 +1,19 @@
-# ccursor
+# cursor-byok
 
-Keep **bring-your-own-key** working in the Cursor IDE across updates.
+Use your own API key with Cursor's chat and agent, and keep it working when Cursor
+updates.
 
-Cursor lets you point its chat and agent at your own [OI]-compatible endpoint.
-In practice that setup breaks in six separate places, each failing with a different,
-unhelpful error. This tool fixes all six, verifies the result, and re-applies itself
-when Cursor updates and wipes the patches.
+Cursor has a built-in bring-your-own-key (BYOK) mode: you point it at an
+OpenAI-compatible endpoint and pay that provider instead of Cursor. In practice the
+mode keeps switching itself off, the model picker falls back to Auto, and agent turns
+end in `Server error`. This tool fixes those failures and puts a small local server
+between Cursor and your endpoint, so every agent turn reaches your model.
 
-It does **not** unlock Cursor's paid models. You still bring your own API key and
-pay your own provider.
+It does **not** unlock Cursor's paid models. You still bring your own key and pay
+your own provider.
 
 ```
-cursor-byok status
+$ cursor-byok status
 ```
 
 ```text
@@ -19,98 +21,79 @@ cursor-byok status
     version 3.27.12
 
 workbench.desktop.main.js
-  hook injected       : yes
+  foreign hook        : none
   subscription guard  : neutralised
   admin policy guard  : neutralised
 
 transport
-  BYOK extension      : installed
   router always-local : yes
   router agent-host   : yes
+  extension hashes    : 15 verified, 2 ours unverified
+  schema cache        : 9546 messages from Cursor's client
 
 configuration
   disableHttp2        : true
   routes.json port    : 39831
-  providers           : 1 (blink)
+  redirect rules      : 91
+  providers           : 1
   BYOK server         : running on 39831
 ```
 
 ---
 
-## Is this for you?
+## What it does
 
-You configured your own key in Cursor and it does not work: the picker falls back
-to Auto, or every agent turn ends in `Server error`. That is what this fixes.
+Three things, in this order:
 
----
-
-## How it works
-
-Cursor sends every agent turn to its own backend. This tool installs a router that
-diverts those calls to a local server, which talks to your endpoint instead. The
-server is part of this repository — it reads Cursor's own protobuf schema from the
-installed app, so it keeps working when Cursor changes shape.
-
-**Startup** — `cursor-byok run`:
+1. **Stops Cursor from switching BYOK off.** Cursor has two independent guards that
+   quietly turn the setting back off — one when your billing profile refreshes, one
+   when the account policy is read. Both are neutralised.
+2. **Adds a router inside Cursor.** A small script is prepended to Cursor's own
+   extension hosts. It rewrites the calls Cursor would send to its own backend so
+   they go to a local server instead.
+3. **Answers those calls locally.** `cursor-byok serve` runs a server on
+   `127.0.0.1:39831` that speaks Cursor's protocol and forwards each turn to the
+   endpoint in your config.
 
 ```
-1. marker check        bundle mtimes changed? -> Cursor updated -> re-apply
-2. seed catalog        state.vscdb <- your models from providers.json
-3. start the server    it must own the port before Cursor boots
-4. launch Cursor       the extension sees the port taken and steps aside
+Cursor  ──▶  router (inside Cursor)  ──▶  127.0.0.1:39831  ──▶  your endpoint
+             rewrites the target           answers Cursor's        streams the
+                                           protocol, runs the      answer back
+                                           agent + tool loop
 ```
 
 Nothing is forwarded to Cursor's backend. Model listing, the agent loop, tool
-execution, usage panels and analytics are all answered locally, so the account
-needs no plan and no seat.
+execution, usage panels and analytics are all answered locally, so the account needs
+no plan and no seat.
 
-Telemetry is answered locally too. `routes.json` lists the hosts that only carry
-reports — error tracking, feature-flag assignment, Microsoft's inherited VS Code
-telemetry — and the router replies to them itself with `204` instead of letting them
-leave the machine. Marketplace and update hosts are deliberately not in that list:
-blocking those would break extension installs and updates.
+## What it does not do
 
-**One agent turn:**
+- No access to Cursor's paid models, quotas, or cloud agents.
+- No proxy, no VPN, no account sharing.
+- No traffic to Cursor's backend on your behalf. Telemetry hosts are answered
+  locally with `204` and dropped. Marketplace and update hosts are deliberately left
+  alone, because blocking them would break extension installs and updates.
+- No change to your code, your repositories, or your extensions.
 
-```
-composer
-  -> agent host          https.request("api2.cursor.sh/.../RunSSE")
-  -> router              host + path match routes.json -> rewrite
-  -> 127.0.0.1:39831     resolve model id -> apiModel
-  -> your endpoint       POST /chat/completions (stream)
-  <- SSE deltas          mapped to Cursor frames
-  <- renderer
-```
+## Is this for you?
 
-**Tool calls** are a loop, not one request:
+Yes, if you configured your own key in Cursor and it does not work: the picker falls
+back to Auto, the toggle turns itself off, or every agent turn fails.
 
-```
-round N   prompt = system + tools + conversation + tool_results
-          model returns stop_reason = tool_use
-          adapter maps the tool name to a Cursor tool, Cursor executes it natively
-          result appended as a tool_results turn
-round N+1 ...                                  until stop_reason = end_turn
-```
-
-The model decides when to stop, which is why an unbounded run can loop.
-[docs/tool-calling.md](docs/tool-calling.md) covers that and the one-file-per-Write
-rule.
-
-Full trace with real log lines: [docs/architecture.md](docs/architecture.md).
+No, if you are looking for free access to Cursor's models. This is a BYOK fix, not a
+subscription bypass.
 
 ---
 
 ## Requirements
 
-- Linux with an extracted Cursor install (AppImage, `.deb`, `.rpm` — anything with
-  a `resources/app` directory)
-- Node.js 22.5+ (uses the built-in `node:sqlite`)
-- One dependency: [`protobufjs`](https://www.npmjs.com/package/protobufjs), for the
-  protobuf schemas. No native modules, no build step.
-- An [OI]-compatible endpoint and key
+- Linux with an extracted Cursor install (AppImage, `.deb`, `.rpm` — anything that
+  has a `resources/app` directory).
+- Node.js 22.5 or newer (uses the built-in `node:sqlite`).
+- An OpenAI-compatible endpoint and key.
 
 macOS and Windows are not covered by the update and launcher helpers. The patching
-logic itself is platform-independent; `CURSOR_APP_ROOT` lets you point it anywhere.
+logic itself is platform-independent; `CURSOR_APP_ROOT` points it anywhere.
 
 ## Install
 
@@ -118,11 +101,16 @@ logic itself is platform-independent; `CURSOR_APP_ROOT` lets you point it anywhe
 git clone https://github.com/fahmiirsyadk/ccursor ~/dev/ccursor
 cd ~/dev/ccursor
 npm install
-npm link          # or: node src/cli.js <command>
+npm link            # optional: gives you the `cursor-byok` command
+```
+
+Then patch your install:
+
+```bash
 cursor-byok apply
 ```
 
-Run straight from the tree without linking:
+Or run it straight from the checkout, without linking:
 
 ```bash
 node src/cli.js apply
@@ -134,9 +122,14 @@ If Cursor lives somewhere unusual:
 CURSOR_APP_ROOT=/path/to/resources/app cursor-byok apply
 ```
 
-## Configure a provider
+`apply` is safe to run again. It reports what changed and does nothing if everything
+is already in place. Use `--dry-run` to see the plan without writing.
 
-`~/.ccursor/providers.json` lists the endpoints and models you want in the picker:
+## Configure
+
+Everything lives in `~/.cursor-byok-patch/` (`CURSOR_BYOK_STATE` overrides it).
+
+### 1. `providers.json` — your endpoints and models
 
 ```json
 {
@@ -156,9 +149,6 @@ CURSOR_APP_ROOT=/path/to/resources/app cursor-byok apply
           "contextTokenLimit": 200000,
           "maxOutputTokens": 16384,
           "supportsImages": false,
-          "supportsAgent": true,
-          "supportsCmdK": true,
-          "thinking": false,
           "defaultOn": true
         }
       ]
@@ -167,48 +157,36 @@ CURSOR_APP_ROOT=/path/to/resources/app cursor-byok apply
 }
 ```
 
-Then add the Auto alias and pick a model:
+`id` is what Cursor shows and stores; `apiModel` is the name sent to your provider
+(defaults to `id`). Set `contextTokenLimit` — it drives the context meter and
+compaction, and a wrong value causes bad truncation.
+
+Full field reference and worked examples: [docs/provider-setup.md](docs/provider-setup.md).
+
+### 2. `cursor-byok alias` — make Auto work
+
+Cursor sends `modelId: "default"` whenever **Auto** is selected, and new composers
+start on Auto. Without an alias those turns are rejected before reaching your
+endpoint.
 
 ```bash
 cursor-byok alias
 ```
 
-Cursor sends `modelId: "default"` whenever Auto is selected, and new composers start
-on Auto, so without the alias those turns are rejected before reaching your
-endpoint. Full field reference: [docs/provider-setup.md](docs/provider-setup.md).
+This adds a `default` entry pointing at your primary model. The picker still shows a
+single Auto entry.
 
-## Commands
+### 3. `routes.json` — what gets diverted
 
-| Command | Purpose |
-|---|---|
-| `apply` | Patch an install and seed the catalog. Idempotent. `--dry-run` to preview. |
-| `status` | What is currently in effect, including a live server health check. |
-| `doctor` | Explain why something is broken, and print the next step. |
-| `revert` | Restore the bundles Cursor shipped with. |
-| `run` | Re-apply if needed, seed the catalog, start the server, launch Cursor. |
-| `serve` | Run the server in the foreground (`--port`, `--app`). |
-| `stop` | Stop the background server started by `run`. |
-| `stop` | Stop the background server started by `run`. |
-| `update` | Extract a new AppImage into a staging tree, patch it, verify, swap. |
-| `update --rollback` | Go back to the previous tree. |
-| `alias` | Map Cursor's Auto id (`default`) to your primary model. |
-| `rule` | Print the agent rule that keeps multi-file edits sane. |
+Written by `apply` from Cursor's own protocol schema, so it covers every RPC the
+client can call — currently 86 services plus 5 auth endpoints. You normally do not
+edit it.
 
-### Point your launcher at `run`
+---
 
-`run` does three things in order, and the order matters:
+## Use
 
-1. Re-applies patches if bundle mtimes no longer match the marker (Cursor updated).
-2. Seeds the model catalog into `state.vscdb` **while Cursor is closed**, so the
-   first `AvailableModels` render already has your models.
-3. Starts the server in the background and waits until it answers.
-4. Launches Cursor detached.
-
-The order matters: the BYOK extension probes `/health` when it boots and steps
-aside when something answers as ours. Starting the server after Cursor loses that
-race and the extension serves instead.
-
-Wire it into your desktop entry once:
+Point your desktop entry at `run` instead of the Cursor binary:
 
 ```ini
 [Desktop Entry]
@@ -218,59 +196,186 @@ Type=Application
 StartupWMClass=Cursor
 ```
 
-Seeding is skipped with a warning when Cursor is already running, because Cursor
-would overwrite the row from memory within seconds.
+`run` does four things, and the order matters:
 
-### Updating Cursor
+1. Re-applies the patches if Cursor was updated.
+2. Seeds your models into Cursor's state (Cursor must be closed for this).
+3. Starts the local server and waits until it answers.
+4. Launches Cursor.
 
-Do not launch the raw AppImage — it will replace the patched tree with a clean one.
-Use the staging flow instead:
+Any flags after `run` are passed to Cursor. It also clears `CURSOR_API_BASE_URL` and
+`CURSOR_WEBSITE_URL` from the environment, because a stray base URL makes the client
+speak HTTP/2 to a plain HTTP server.
+
+The server must own the port before Cursor starts, because the router sends traffic
+there from the first turn.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `apply` | Patch the install, cache the schema and prompt, seed the catalog. Idempotent. `--dry-run` previews. |
+| `status` | Show what is in effect, plus a live server check. |
+| `doctor` | Explain what is broken and print the fix. |
+| `revert` | Restore the bundles Cursor shipped with. |
+| `run` | Re-apply if needed, seed, start the server, launch Cursor. |
+| `serve` | Run the server in the foreground (`--port`, `--app`). |
+| `stop` | Stop the background server (`--force` even while Cursor runs). |
+| `update` | Extract a new AppImage into a staging tree, patch, verify, swap. |
+| `update --rollback` | Go back to the previous tree. |
+| `alias` | Map Cursor's Auto id (`default`) to your primary model. |
+| `rule` | Print the agent rule that keeps multi-file edits sane (`--write <path>`). |
+
+Environment variables: `CURSOR_APP_ROOT`, `CURSOR_BYOK_STATE`, `NO_COLOR`.
+
+---
+
+## What the model can do
+
+The agent runs with Cursor's own tool vocabulary, and Cursor executes the tools
+natively — the local server never touches your files.
+
+| Tool | Purpose |
+|---|---|
+| `Read` | Read a file, with optional offset and limit. |
+| `Write` | Create or replace a file. |
+| `Edit` | Replace an exact string in a file. |
+| `Delete` | Remove a file. |
+| `Shell` | Run a command in a persistent terminal session. |
+| `Grep` | Search file contents by regular expression. |
+| `Glob` | Find files by pattern. |
+| `Task` | Delegate to a subagent. |
+
+Subagents are real: `explore` gets read-only tools (`Read`, `Grep`, `Glob`), while
+`debug` and `bash` also get write and shell access. A subagent is never given
+`Task`, so it cannot re-delegate the same work forever.
+
+Also working:
+
+- **Streaming.** Text arrives as it is generated, with heartbeats while a long tool
+  runs, so Cursor does not report a stalled connection.
+- **Images.** Attached screenshots are passed to models that accept them. For a
+  text-only model, the text in the image is read locally when OCR is available, and
+  the model is told what was attached either way.
+- **Cursor's own prompt.** The agent prompt is read from Cursor's installed
+  `cursor-agent-exec` extension and rendered from its own element tree. The
+  per-turn `user_info` block (OS, shell, workspace path, date) is built the same way.
+  Nothing in the prompt is written by this project.
+- **Your instructions.** `AGENTS.md`, `.cursor/rules`, custom instructions and a
+  subagent reminder are passed through from the request, verbatim.
+- **History.** Uploaded conversation blobs are stored locally, so earlier turns
+  survive a restart.
+
+---
+
+## Can it break Cursor?
+
+It edits files inside your Cursor installation, so treat it like any patch: it can
+break that install, and a Cursor update can undo it.
+
+Most of the change is additive: a router prepended to two of Cursor's extension
+hosts, plus a local server that runs as its own process. The edits to Cursor's own
+logic are small and specific — two guards replaced with a constant, the extension
+hash check narrowed to the two files we touch, and one settings flag.
+
+What protects you:
+
+- **A baseline is captured before the first write**, and a timestamped snapshot
+  before every write. `cursor-byok revert` restores the pristine files.
+- **Patches are validated.** Each one anchors on surrounding code, checks the span
+  it is about to rewrite, and refuses to write when the shape does not match. It
+  reports the problem instead of guessing.
+- **Updates go through a staging tree.** `update` extracts the new AppImage beside
+  the old one, patches it, syntax-checks it, and only then swaps. The previous tree
+  stays at `squashfs-root.old` until the next update, and `update --rollback`
+  returns to it.
+- **The server is separate from Cursor.** If it crashes or is stopped, Cursor still
+  runs; agent turns fail until you start it again.
+
+What it changes, and nothing else:
+
+| Target | Change |
+|---|---|
+| `out/vs/workbench/workbench.{desktop,glass}.main.js` | Two one-line guards neutralised; a hook an earlier installer left behind is removed |
+| `extensions/cursor-{agent-host,always-local}/dist/main.js` | Router prepended |
+| `out/vs/workbench/api/node/extensionHostProcess.js` | Hash check narrowed to those two files, so everything else is still verified |
+| `~/.config/Cursor/User/settings.json` | `cursor.general.disableHttp2 = true` |
+| `product.json` | Checksums refreshed for the patched bundles |
+| `~/.config/Cursor/User/globalStorage/state.vscdb` | Your models seeded into the picker (only in `apply` / `run`) |
+
+Do not launch the raw AppImage after patching: it will replace the patched tree with
+a clean one. Use the staging flow instead:
 
 ```bash
 cursor-byok update --appimage ~/Applications/Cursor.AppImage
 ```
 
-The new version is extracted beside the install (same filesystem, so the swap is a
-rename), patched, syntax-checked, and only then swapped in. The previous tree stays
-at `squashfs-root.old` until the next update.
+`--install-dir` picks a different destination, `--drop-old` deletes the previous
+tree after a successful swap, and `--rollback` restores it.
+
+### Local state
+
+```
+~/.cursor-byok-patch/
+  providers.json   your endpoints and models
+  routes.json      what gets diverted (generated)
+  prompt.txt       Cursor's agent prompt (extracted by apply)
+  schema/          Cursor's protobuf schema (extracted by apply)
+  baselines/       bundles as Cursor shipped them, captured before the first write
+  backups/         timestamped copy before each write
+  applied.json     bundle mtimes at the last successful patch
+  catalog.json     last catalog computed from providers.json
+  server.log       server output
+```
+
+Delete the directory to start clean.
 
 ---
 
-## What gets modified
+## Troubleshooting
 
-| Target | Change |
+Start with:
+
+```bash
+cursor-byok doctor
+```
+
+It checks the install, both guards, the router, the HTTP setting, the port, the
+provider file, and the server, then prints the next step.
+
+| Symptom | Likely cause |
 |---|---|
-| `out/vs/workbench/workbench.{desktop,glass}.main.js` | Two one-line guards neutralised |
-| `extensions/cursor-{agent-host,always-local}/dist/main.js` | HTTP/1.1 router (upstream installer) |
-| `out/vs/workbench/api/node/extensionHostProcess.js` | Hook bootstrap (upstream installer) |
-| `~/.config/Cursor/User/settings.json` | `cursor.general.disableHttp2 = true` |
-| `~/.ccursor/routes.json` | `server.port` synchronised |
-| `product.json` | Checksums refreshed for patched bundles |
-| `~/.config/Cursor/User/globalStorage/state.vscdb` | Model catalog and composer models seeded (only in `apply`/`run`) |
+| Picker shows only Auto | The `default` alias is missing, or the catalog was seeded before the server was up. |
+| `Server error` on every turn | The server is not listening, or `disableHttp2` is not `true`. |
+| Toggle turns itself off | A guard patch is missing — run `apply`. |
+| Everything stopped after an update | Cursor replaced the patched tree — run `apply`, or use `update`. |
 
-Local state lives in `~/.cursor-byok-patch`:
+More: [docs/troubleshooting.md](docs/troubleshooting.md).
 
-```
-baselines/   bundles as Cursor shipped them, captured before the first write
-backups/     timestamped copy before each write
-applied.json bundle mtimes at last successful patch
-catalog.json last catalog computed from providers.json
-```
+## Documentation
 
-`revert` restores from `baselines/`. Delete the directory to start clean.
+| Document | Contents |
+|---|---|
+| [architecture.md](docs/architecture.md) | How a message travels, with real log lines. |
+| [how-it-works.md](docs/how-it-works.md) | The six failure modes this fixes, and the evidence for each. |
+| [provider-setup.md](docs/provider-setup.md) | Every `providers.json` field, with examples. |
+| [troubleshooting.md](docs/troubleshooting.md) | Symptom → cause → fix. |
+| [tool-calling.md](docs/tool-calling.md) | Why one `Write` call per file matters. |
 
 ## Before you start
 
-- **Your keys, your bill.** Requests go straight to the endpoint you configure.
+- **Your keys, your bill.** Requests go straight to the endpoint you configure,
+  under that provider's terms.
 - **Third-party modification.** This patches Cursor's application bundle. Cursor's
-  terms may prohibit it, and updates can break it at any time. Use it on your own
-  machine, on your own account, at your own risk.
-- **Verify against your build.** Patches anchor on surrounding code and refuse to
-  apply when the shape changed. `doctor` tells you when that happens instead of
-  writing something broken.
-- **No affiliation.** Not affiliated with Cursor or Anysphere. The hook and router
-  come from [@cometix/ccursor](https://www.npmjs.com/package/@cometix/ccursor),
-  which this tool drives, pins by hash, and vendors rather than re-fetching.
+  terms may prohibit that, and updates can break it. Use it on your own machine, on
+  your own account, at your own risk.
+- **No affiliation.** Not affiliated with Cursor or Anysphere. The router, the
+  server, the schema reader and the prompt renderer are all in this repository.
+- **No third-party code.** The only runtime dependency is
+  [`protobufjs`](https://www.npmjs.com/package/protobufjs). Nothing is downloaded at
+  run time.
+
+See [SECURITY.md](SECURITY.md) for the full trust model.
 
 ## Development
 
@@ -279,8 +384,17 @@ npm test
 ```
 
 The patch tests build synthetic bundles that reproduce the shape of Cursor's
-minified output, so a change in Cursor's structure fails a test rather than
-silently producing a broken bundle.
+minified output, so a change in Cursor's structure fails a test instead of silently
+producing a broken bundle.
+
+Useful:
+
+```bash
+node tools/extract-schema.js --message AgentRunRequest   # inspect Cursor's protocol
+node tools/extract-prompt.js --print                    # read Cursor's agent prompt
+```
+
+Contributor notes: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

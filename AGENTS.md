@@ -21,22 +21,35 @@ step, no transpiler. `node:test` for tests.
 | `src/state.js` | Baselines, snapshots, the update marker. |
 | `src/update.js` | AppImage staging, verification, swap, rollback. |
 | `src/locate.js` | Finds `resources/app`. |
-| `src/ccursor.js` | Drives the pinned upstream hook installer. |
+| `src/inject.js` | Prepends the router to Cursor's own extension hosts. |
+| `src/router.js` | The router itself: runs inside Cursor, diverts calls. |
+| `src/extensionHost.js` | Narrows the extension hash check to the files we modify. |
 | `src/cli.js` | Argument parsing and command dispatch. |
 | `src/server.js` | The local BYOK server: Connect RPC surface. |
 | `src/daemon.js` | Starting, probing and stopping the background server. |
+| `src/prompt/` | Cursor's own prompt: load its builder from the install, render the tree, build the `user_info` block per turn. |
 | `src/agent/` | One agent turn: request parsing, provider call, response encoding. |
 
 ## Rules for changes
 
 **Never write a bundle without a baseline and a snapshot first.** `revert` is the
 only safety net a user has. `state.captureBaseline` runs before anything else
-touches a file, including the upstream installer.
+touches a file.
 
 **Keep patch anchors structural.** A minified bundle has no stable names. Anchor on
 surrounding text, bound the span, validate it, and report `not-found` rather than
 guessing. A patch that matches too loosely corrupts the install; failing loudly is
 always better.
+
+**Never write prompt text.** The system prompt is Cursor's: `src/prompt/` reads its
+builder from the install and renders it. If extraction fails, the turn runs without
+it and says so. A hand-written substitute is a prompt this project invented, and it
+drifts from the behaviour the IDE actually has.
+
+**A tool call is not always a tool exec.** Cursor has a `globToolCall` but no glob
+exec — a Glob runs as a Grep with the glob as a filter. Check `ExecServerMessage` in
+the schema before inventing a case, and mirror what Cursor's own runtime does with it
+(`extensions/cursor-agent-host`).
 
 **Refuse to seed while Cursor is running.** Cursor holds that state in memory and
 rewrites the row within seconds, so a live seed is silently lost. `seed.js` checks
@@ -47,9 +60,9 @@ token that tooling rewrites in transcripts, so a literal copy can be a different
 string than the one on disk. Build such names from parts and pin the bytes in a test
 (`tests/toggle.test.js`).
 
-**The server must own the port before Cursor starts.** The BYOK extension probes
-`/health` on boot and steps aside when something answers as ours. Starting the
-server after Cursor loses that race and the extension serves instead.
+**The server must be listening before Cursor starts.** The router inside Cursor's
+extension hosts sends traffic to the port, so a server started afterwards arrives to
+find every turn already failed.
 
 **Run `npm test` before committing.** The fixtures reproduce the real shape of
 Cursor's minified output. If a change makes them fail, the change is wrong or the

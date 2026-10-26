@@ -6,9 +6,9 @@ Start here:
 cursor-byok doctor
 ```
 
-It checks the install, both guards, the router, the extension, the HTTP setting,
-the port, the server health, and your provider file. Each failure prints the
-command that fixes it.
+It checks the install, both guards, the router, the HTTP setting, the port, the
+server health, and your provider file. Each failure prints the command that fixes
+it.
 
 ---
 
@@ -27,7 +27,7 @@ The BYOK toggle is off, or the toggle was cleared after a plan refresh.
 **The model is missing from `Add Models`.**
 
 The name must match what your endpoint serves. `AvailableModels` is served by the
-local server from `~/.ccursor/providers.json`; if that file is empty or malformed,
+local server from `providers.json` in the state directory; if that file is empty or malformed,
 the picker has nothing to show. `cursor-byok status` reports the provider count.
 
 ---
@@ -40,7 +40,7 @@ the picker has nothing to show. `cursor-byok status` reports the provider count.
 node -e 'const fs=require("fs");const p=process.env.HOME+"/.config/Cursor/User/settings.json";console.log(JSON.parse(fs.readFileSync(p,"utf8"))["cursor.general.disableHttp2"])'
 ```
 
-Must print `True`. If it prints `None` or `False`, run `cursor-byok apply`.
+Must print `true`. If it prints `undefined` or `false`, run `cursor-byok apply`.
 
 **Then check for a stray base URL override.**
 
@@ -51,15 +51,17 @@ env | grep CURSOR_API_BASE_URL
 Unset it. The router rewrites URLs; this variable makes the client speak HTTP/2 to
 a plain HTTP server, which yields `ERR_HTTP2_ERROR`.
 
-**Confirm the request actually reached the local server.** Enable the extension log
-stream and send one message:
+**Confirm the request actually reached the local server.** Send one message, then
+read the server log:
 
 ```bash
-curl -sN "http://127.0.0.1:39831/byok/log-stream?windowId=1"
+tail -f ~/.cursor-byok-patch/server.log
 ```
 
-A working turn logs `[AGENT] → [openai-chat/<model>] ... "your prompt"`. If nothing
-appears, the request never arrived and the transport is still the problem.
+A working turn prints a `RunSSE ... started` line, then the system message it built,
+then `turn done: ...`. If nothing appears, the request never arrived and the
+transport is still the problem. `curl -s http://127.0.0.1:39831/byok/debug` shows
+request counters, including RPCs the server did not recognise.
 
 ---
 
@@ -102,9 +104,10 @@ curl -s http://127.0.0.1:39831/health
 
 Expected: `{"ok":true,"mode":"byok"}`.
 
-If it fails, the extension is not running or is on another port. `status` prints
-the port from `routes.json`; the extension log prints the port it bound to. They
-must match. `apply` synchronises them.
+If it fails, the server is not running or is on another port. `status` prints the
+port from `routes.json`; `serve` prints the port it bound to. They must match.
+`apply` synchronises them. Start it with `cursor-byok run`, or in the foreground
+with `cursor-byok serve`.
 
 ---
 
@@ -155,12 +158,12 @@ endpoint.
 cursor-byok alias          # maps "default" to your primary model
 ```
 
-The extension hot-reloads the file in about two seconds. If you are already on a
-named model, switching away from Auto also avoids it — but the alias is the durable
-fix, because new composers start on Auto.
+The server reads `providers.json` on every turn, so no restart is needed. If you
+are already on a named model, switching away from Auto also avoids it — but the
+alias is the durable fix, because new composers start on Auto.
 
 Why it can appear even though you picked a named model: the catalog Cursor persisted
-can revert to its own 46-model list if a model fetch lands before the BYOK extension
+can revert to its own 46-model list if a model fetch lands before the local server
 is listening. When that happens a new composer defaults to Auto. See failure 5 in
 `docs/how-it-works.md`.
 
@@ -168,8 +171,8 @@ is listening. When that happens a new composer defaults to Auto. See failure 5 i
 
 ## Picker shows only Auto, but the server is healthy
 
-The startup race. Cursor's first model fetch beats the extension by a few seconds
-and the resulting catalog gets persisted.
+The startup race. Cursor's first model fetch beats the local server by a few
+seconds, and the resulting catalog gets persisted.
 
 ```bash
 cursor-byok run     # quit Cursor first: seeds, then launches

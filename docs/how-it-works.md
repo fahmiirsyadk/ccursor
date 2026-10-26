@@ -153,12 +153,12 @@ The whole expression becomes a constant:
 
 **Symptom**
 
-`status` shows the extension listening on one port and `routes.json` naming
+`status` shows the server listening on one port and `routes.json` naming
 another. Requests reach a closed socket.
 
 **Cause**
 
-A `cursor2plus.server.port` override in `settings.json` takes precedence over the
+A stale port override in `settings.json` takes precedence over the
 port the router reads from `routes.json`.
 
 **Fix**
@@ -168,7 +168,7 @@ both sides agree.
 
 ---
 
-## 5. The first model fetch beats the extension
+## 5. The first model fetch beats the local server
 
 **Symptom**
 
@@ -179,11 +179,11 @@ fall back to Auto.
 
 **Evidence**
 
-Startup ordering, from the extension log and process start time:
+Startup ordering, from the server log and process start time:
 
 ```text
 14:32:00  Cursor process starts
-14:32:08  BYOK extension binds 127.0.0.1:39831      <- 8 second gap
+14:32:08  the router starts diverting              <- server must be up
 ```
 
 For those eight seconds the renderer's `AvailableModels` request cannot be
@@ -191,7 +191,7 @@ redirected, so it reaches Cursor's backend and returns the full catalog:
 
 ```text
 catalog         : 46 entries (default, grok-4.7, composer-2.5, ...)
-has your model  : False
+has your model  : no
 userAddedModels : []          <- pruned during reconciliation
 ```
 
@@ -257,7 +257,8 @@ Add an alias entry whose `apiModel` points at a real model:
 { "id": "default", "apiModel": "vendor/model-large", "defaultOn": false }
 ```
 
-`cursor-byok alias` writes it, and the extension hot-reloads within two seconds.
+`cursor-byok alias` writes it, and the server reads `providers.json` on every
+turn, so no restart is needed.
 `seed.js` also pins every composer mode to the primary model, so new composers do
 not start on Auto in the first place.
 

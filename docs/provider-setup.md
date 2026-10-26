@@ -1,8 +1,8 @@
 # Provider setup
 
-`~/.ccursor/providers.json` defines what the local BYOK server exposes to Cursor.
-The file is read by the extension, hot-reloaded on change, and served through
-`AvailableModels`.
+`providers.json` in the state directory defines what the local BYOK server exposes
+to Cursor. The server reads it on every turn and serves it through `AvailableModels`,
+so an edit takes effect without a restart.
 
 ## Shape
 
@@ -51,10 +51,10 @@ The file is read by the extension, hot-reloaded on change, and served through
 | `anthropic` | `POST /messages` |
 | `gemini` | Google Generative Language API |
 
-If you are unsure, use `openai-chat`. It covers the widest range of [OI]-compatible
+If you are unsure, use `openai-chat`. It covers the widest range of OpenAI-compatible
 servers.
 
-## Example: [OI]-compatible gateway
+## Example: OpenAI-compatible gateway
 
 ```json
 {
@@ -86,8 +86,8 @@ servers.
 
 ## Example: local server
 
-The endpoint must be reachable **from the extension host**, which runs on your
-machine, so a loopback address works here:
+The endpoint must be reachable **from the machine running Cursor**, so a loopback
+address works here:
 
 ```json
 {
@@ -116,11 +116,12 @@ machine, so a loopback address works here:
 
 Cursor sends `modelId: "default"` whenever **Auto** is selected, and a freshly
 created composer starts on Auto. If `providers.json` has no model with that id, the
-BYOK server rejects the turn:
+turn is rejected before it reaches your endpoint. Cursor shows the message the server
+returns:
 
 ```
-Model default was not found in ~/.cursor/providers.json.
-Open the Cursor++ side panel -> Providers, add the model, then try again.
+No provider is configured for `default`.
+Add it to `providers.json` in the state directory and reopen the model picker.
 ```
 
 Add the alias with one command:
@@ -144,7 +145,7 @@ Which appends:
 skips `default`, so the picker still shows a single Auto entry rather than a
 duplicate.
 
-The extension hot-reloads `providers.json` within about two seconds, so no restart
+The server reads `providers.json` on every turn, so no restart
 is needed.
 
 ## Verifying
